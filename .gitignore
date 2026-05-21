@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Caches and temporary folders
+.drop_cache/
+.video_jobs/
+.uv-cache/
+.idea/
+.vscode/
+.claude/
+*.log
+
+# Large model files
+RealESRGAN_x4plus_anime_6B.pth
+tagger/models/
+
+# OS specific files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0b">
+<title>Drop Studio · 训练数据管线</title>
+
+<!--
+    资源加载策略：服务器启动时会把 React/Babel 这几个 JS 文件拉到本地 /vendor/ 目录，
+    然后在响应里把下面占位符替换成 /vendor/* 路径；缓存失败才退回 CDN。
+    手机即便没有外网，只要能连到本机所在的局域网就能正常打开整个 WebUI。
+-->
+<script crossorigin src="__JS_REACT__"></script>
+<script crossorigin src="__JS_REACT_DOM__"></script>
+<script src="__JS_BABEL__"></script>
+
+<!-- Fonts: Inter Tight + JetBrains Mono. Failure-tolerant: tokens.css 已自带 system fallback。 -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="/lib/tokens.css">
+
+</head>
+<body>
+<div id="root"></div>
+
+<!-- 共享基础（lib/） -->
+<script type="text/babel" data-presets="react" src="/lib/icons.jsx?v=102"></script>
+<script type="text/babel" data-presets="react" src="/lib/api.jsx?v=102"></script>
+<script type="text/babel" data-presets="react" src="/lib/shell.jsx?v=102"></script>
+
+<!-- 主屏 -->
+<script type="text/babel" data-presets="react" src="/screens/home.jsx?v=102"></script>
+<script type="text/babel" data-presets="react" src="/screens/crop.jsx?v=102"></script>
+<script type="text/babel" data-presets="react" src="/screens/reels.jsx?v=102"></script>
+<script type="text/babel" data-presets="react" src="/screens/sim.jsx?v=102"></script>
+<script type="text/babel" data-presets="react" src="/screens/video.jsx?v=102"></script>
+
+<script type="text/babel" data-presets="react" src="/app.jsx?v=102"></script>
+
+<!-- Tagger 屏特殊处理：源码按 7 个文件维护，服务端拼成 /tagger.bundle.jsx；
+     不走 babel-standalone 的 <script type="text/babel"> 自动跑批——它对体积较大
+     的脚本会偶发性「转译后不触发执行」（DOM 里能看到 inline <script>，但浏览器
+     不跑），导致 window.TaggerScreen 缺席、tagger 屏整片空白。
+     这里改成「手动 fetch + Babel.transform + eval」，把执行权抓在自己手里。 -->
+<script>
+(async function loadTaggerBundle() {
+    try {
+        const r = await fetch('/tagger.bundle.jsx', { cache: 'no-store' });
+        if (!r.ok) throw new Error('fetch tagger.bundle.jsx ' + r.status);
+        const src = await r.text();
+        // 等 Babel ready（理论上前面 <script src=babel> 同步加载完已就绪，
+        // 但极少数情况下顺序异常时给一个温和的兜底）。
+        let tries = 0;
+        while (!(window.Babel && window.Babel.transform) && tries < 50) {
+            await new Promise(res => setTimeout(res, 60));
+            tries++;
+        }
+        if (!window.Babel || !window.Babel.transform) {
+            console.error('[tagger-loader] Babel.transform unavailable');
+            return;
+        }
+        const code = window.Babel.transform(src, { presets: ['react'] }).code;
+        (0, eval)(code);
+        window.dispatchEvent(new Event('tagger-ready'));
+    } catch (e) {
+        console.error('[tagger-loader] failed:', e);
+    }
+})();
+</script>
+</body>
+</html>

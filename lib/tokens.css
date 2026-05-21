@@ -1,0 +1,410 @@
+/* ============================================================
+   DROP STUDIO — Design tokens
+   Aesthetic: data/imaging-tool dark, à la Linear/DaVinci.
+   Pure black backdrop, "ink" surface, single accent.
+   ============================================================ */
+
+:root {
+    --bg:           #0a0a0b;
+    --surface-0:    #101013;
+    --surface-1:    #16161a;
+    --surface-2:    #1d1d22;
+    --surface-3:    #26262c;
+    --line:         #26262c;
+    --line-strong:  #34343c;
+
+    --text:         #ECECEE;
+    --text-2:       #A1A1A8;
+    --text-3:       #6F6F77;
+    --text-4:       #4A4A52;
+
+    --accent:       #6EE7C8;
+    --accent-soft:  rgba(110, 231, 200, 0.12);
+    --accent-line:  rgba(110, 231, 200, 0.32);
+    --accent-ink:   #0a0a0b;
+
+    --warn:         #F4B860;
+    --warn-soft:    rgba(244, 184, 96, 0.12);
+    --danger:       #FF6B6B;
+    --danger-soft:  rgba(255, 107, 107, 0.10);
+    --info:         #82A4FF;
+
+    --font-ui:      "Inter Tight", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --font-mono:    "JetBrains Mono", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+    --font-display: "Inter Tight", system-ui, sans-serif;
+
+    --r-1: 4px;
+    --r-2: 6px;
+    --r-3: 8px;
+    --r-4: 10px;
+
+    --ease: cubic-bezier(.32, .72, 0, 1);
+    --t-fast: 140ms;
+    --t-base: 200ms;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+    margin: 0; padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+}
+
+body {
+    overflow: hidden;
+    user-select: none;
+}
+
+#root {
+    height: 100vh; height: 100dvh;
+    display: flex; flex-direction: row;
+}
+
+img, video, canvas { max-width: 100%; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--line-strong); background-clip: padding-box; border: 2px solid transparent; }
+
+.eyebrow {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+.num   { font-family: var(--font-mono); font-feature-settings: "tnum" 1; font-variant-numeric: tabular-nums; }
+.muted { color: var(--text-2); }
+.dim   { color: var(--text-3); }
+.mono  { font-family: var(--font-mono); }
+
+.btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: 6px;
+    padding: 7px 12px;
+    border-radius: var(--r-2);
+    border: 1px solid transparent;
+    font-family: var(--font-ui);
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+    background: transparent;
+    cursor: pointer;
+    transition: background var(--t-fast) var(--ease),
+                border-color var(--t-fast) var(--ease),
+                color var(--t-fast) var(--ease),
+                transform 80ms var(--ease);
+    user-select: none;
+    white-space: nowrap;
+}
+.btn:active:not(:disabled) { transform: scale(0.98); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.btn-ghost { color: var(--text-2); }
+.btn-ghost:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+
+.btn-soft { background: var(--surface-2); color: var(--text); border-color: var(--line); }
+.btn-soft:hover:not(:disabled) { background: var(--surface-3); border-color: var(--line-strong); }
+
+.btn-primary {
+    background: var(--accent);
+    color: var(--accent-ink);
+    border-color: var(--accent);
+    font-weight: 600;
+}
+.btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+
+.btn-warn   { color: var(--warn); border-color: var(--line); background: var(--surface-1); }
+.btn-warn:hover:not(:disabled) { background: var(--warn-soft); border-color: var(--warn); }
+
+.btn-danger { color: var(--danger); border-color: var(--line); background: var(--surface-1); }
+.btn-danger:hover:not(:disabled) { background: var(--danger-soft); border-color: var(--danger); }
+
+.btn-sm  { padding: 5px 9px;  font-size: 12px; }
+.btn-lg  { padding: 11px 16px; font-size: 14px; }
+
+.btn-icon {
+    width: 30px; height: 30px;
+    padding: 0;
+    color: var(--text-2);
+    border-radius: var(--r-2);
+    background: transparent; border: 1px solid transparent;
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.btn-icon:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.btn-icon:disabled { opacity: .35; cursor: not-allowed; }
+
+.input, .select {
+    width: 100%;
+    padding: 8px 10px;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    color: var(--text);
+    font-family: var(--font-ui);
+    font-size: 13px;
+    outline: none;
+    transition: border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.input:focus, .select:focus { border-color: var(--accent-line); background: var(--surface-0); }
+.input.mono { font-family: var(--font-mono); font-size: 12px; }
+
+.input-row {
+    display: flex; align-items: center; gap: 6px;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    padding: 0 6px 0 10px;
+    transition: border-color var(--t-fast) var(--ease);
+}
+.input-row:focus-within { border-color: var(--accent-line); }
+.input-row .input { background: transparent; border: none; padding: 8px 0; }
+.input-row .input:focus { background: transparent; }
+
+.check {
+    appearance: none;
+    width: 14px; height: 14px;
+    border: 1px solid var(--line-strong);
+    background: var(--surface-1);
+    border-radius: 3px;
+    cursor: pointer;
+    position: relative;
+    flex-shrink: 0;
+    transition: background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease);
+}
+.check:checked { background: var(--accent); border-color: var(--accent); }
+.check:checked::after {
+    content: ''; position: absolute;
+    inset: 1px;
+    background: #0a0a0b;
+    -webkit-mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'><path d='M20 6 9 17l-5-5'/></svg>") center / 80% no-repeat;
+    mask: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='4' stroke-linecap='round' stroke-linejoin='round'><path d='M20 6 9 17l-5-5'/></svg>") center / 80% no-repeat;
+}
+
+.seg {
+    display: inline-flex;
+    background: var(--surface-1);
+    border: 1px solid var(--line);
+    border-radius: var(--r-2);
+    padding: 2px;
+    gap: 0;
+}
+.seg button {
+    appearance: none; background: transparent;
+    border: none; cursor: pointer;
+    padding: 5px 11px;
+    color: var(--text-2);
+    font: 500 12px/1 var(--font-ui);
+    border-radius: 4px;
+    transition: background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.seg button:hover { color: var(--text); }
+.seg button.on { background: var(--surface-3); color: var(--text); box-shadow: 0 0 0 1px var(--line-strong); }
+
+.pill {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 7px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    color: var(--text-2);
+    font: 500 11px/1.6 var(--font-mono);
+    border: 1px solid var(--line);
+}
+.pill.accent { background: var(--accent-soft); color: var(--accent); border-color: var(--accent-line); }
+.pill.warn   { background: var(--warn-soft);   color: var(--warn);   border-color: rgba(244,184,96,.2); }
+.pill.danger { background: var(--danger-soft); color: var(--danger); border-color: rgba(255,107,107,.2); }
+
+.kbd {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 18px; height: 18px;
+    padding: 0 5px;
+    background: var(--surface-2);
+    border: 1px solid var(--line-strong);
+    border-bottom-width: 2px;
+    border-radius: 3px;
+    font: 500 10px/1 var(--font-mono);
+    color: var(--text);
+}
+
+.card {
+    background: var(--surface-0);
+    border: 1px solid var(--line);
+    border-radius: var(--r-3);
+}
+
+.hr { height: 1px; background: var(--line); }
+
+.crop-handle-corner,
+.crop-handle-edge {
+    position: absolute;
+    background: var(--text);
+    border: 1.5px solid #000;
+    box-shadow: 0 1px 2px rgba(0,0,0,.5);
+    transform: translate(-50%, -50%);
+    transition: background var(--t-fast) var(--ease), transform 80ms var(--ease);
+    z-index: 50;
+    touch-action: none;
+}
+.crop-handle-corner { width: 11px; height: 11px; border-radius: 2px; }
+.crop-handle-corner::after, .crop-handle-edge::after {
+    content: ''; position: absolute; inset: -16px;
+}
+.crop-handle-edge.h { width: 24px; height: 5px; border-radius: 2px; }
+.crop-handle-edge.v { width: 5px; height: 24px; border-radius: 2px; }
+.crop-handle-corner.dragging,
+.crop-handle-edge.dragging,
+.crop-handle-corner:active,
+.crop-handle-edge:active {
+    background: var(--accent);
+    transform: translate(-50%, -50%) scale(1.25);
+}
+
+.canvas-backdrop {
+    background:
+        linear-gradient(45deg, var(--surface-0) 25%, transparent 25%),
+        linear-gradient(-45deg, var(--surface-0) 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, var(--surface-0) 75%),
+        linear-gradient(-45deg, transparent 75%, var(--surface-0) 75%);
+    background-size: 18px 18px;
+    background-position: 0 0, 0 9px, 9px -9px, -9px 0px;
+    background-color: var(--bg);
+}
+
+.spin {
+    width: 14px; height: 14px;
+    border: 1.5px solid var(--line-strong);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin .8s linear infinite;
+    display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.toast {
+    position: fixed; bottom: 28px; left: 50%;
+    transform: translateX(-50%) translateY(8px);
+    background: var(--surface-1);
+    border: 1px solid var(--line-strong);
+    color: var(--text);
+    padding: 9px 14px;
+    border-radius: var(--r-2);
+    font-size: 13px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.4);
+    opacity: 0; pointer-events: none;
+    transition: opacity var(--t-base) var(--ease), transform var(--t-base) var(--ease);
+    z-index: 10001;
+    display: flex; align-items: flex-start; gap: 8px;
+    /* 多行错误（带换行的）能完整显示而不被压成一行；又给个 max-width 防爆屏 */
+    max-width: min(80vw, 640px);
+    white-space: pre-line;
+    line-height: 1.5;
+}
+.toast > svg { flex-shrink: 0; margin-top: 2px; }
+.toast.show { opacity: 1; transform: translateX(-50%) translateY(0); pointer-events: auto; }
+.toast.error  { border-color: var(--danger); color: var(--danger); }
+.toast.ok     { border-color: var(--accent); }
+.toast.warn   { border-color: var(--warn); color: var(--warn); }
+
+.modal-backdrop {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.85);
+    backdrop-filter: blur(8px);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 10000;
+    animation: fade-in .15s var(--ease);
+}
+@keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+.bar {
+    height: 4px; width: 100%;
+    background: var(--surface-2);
+    border-radius: 999px; overflow: hidden;
+}
+.bar > .fill {
+    height: 100%; background: var(--accent);
+    transition: width var(--t-base) var(--ease);
+}
+
+.row { display: flex; align-items: center; }
+.col { display: flex; flex-direction: column; }
+.gap-1 { gap: 4px; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; } .gap-4 { gap: 16px; }
+.flex-1 { flex: 1; min-width: 0; }
+.center { display: flex; align-items: center; justify-content: center; }
+
+input[type="range"] {
+    appearance: none;
+    height: 4px;
+    background: var(--surface-2);
+    border-radius: 999px;
+    outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    width: 14px; height: 14px;
+    background: var(--accent);
+    border: 2px solid var(--bg);
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 80ms var(--ease);
+}
+input[type="range"]::-webkit-slider-thumb:active { transform: scale(1.2); }
+
+.fade-in { animation: fade-up .25s var(--ease) both; }
+@keyframes fade-up { from { opacity: 0; transform: translateY(4px);} to { opacity:1; transform: translateY(0);} }
+
+/* Drawer slide animations (used by Crop screen on mobile). */
+@keyframes slide-in-left  { from { transform: translateX(-100%); } to { transform: translateX(0); } }
+@keyframes slide-in-right { from { transform: translateX(100%);  } to { transform: translateX(0); } }
+
+.tile-checked {
+    outline: 2px solid var(--accent) !important;
+    outline-offset: -2px;
+}
+
+/* ============================================================
+   Mobile (<768px) — tightens chrome, fattens touch targets,
+   bumps inputs to 16px so iOS Safari doesn't focus-zoom.
+   Structural changes (sidebar→bottom bar, crop drawers) live
+   in JSX via useIsNarrow(); this block is purely cosmetic.
+   ============================================================ */
+@media (max-width: 767px) {
+    .input, .select, .input.mono { font-size: 16px; }
+
+    .btn      { padding: 9px 14px; font-size: 14px; }
+    .btn-sm   { padding: 6px 11px; font-size: 13px; }
+    .btn-lg   { padding: 12px 18px; font-size: 15px; }
+    .btn-icon { width: 40px; height: 40px; }
+
+    .seg button { padding: 7px 10px; font-size: 12px; }
+    .pill       { font-size: 11px; padding: 3px 9px; }
+
+    /* Keyboard-shortcut chips are noise on a touch device. */
+    .kbd { display: none; }
+
+    /* Bottom-nav clearance: every screen's <main> uses .app-main
+       so its scroll content doesn't sit underneath the fixed bar. */
+    main.app-main { padding-bottom: 56px; }
+
+    /* Crop canvas: leave room for the in-flow action bar + bottom nav. */
+    .crop-mobile-pad { padding-bottom: 80px; }
+
+    /* Toast: lift above the bottom nav so it isn't half-covered. */
+    .toast { bottom: 76px; }
+}
+
+/* Last-resort tightening for very narrow phones (e.g. 360px Android). */
+@media (max-width: 374px) {
+    .seg button { padding: 6px 7px; font-size: 11px; }
+}

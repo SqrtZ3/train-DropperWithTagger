@@ -420,8 +420,8 @@ class SessionManager:
             with Image.open(img_data) as img:
                 img_w, img_h = img.size
 
-                if state.HAS_CORE and hasattr(state.core_logic, "calculate_auto_crop_box"):
-                    return state.core_logic.calculate_auto_crop_box(img, 1.0)
+                if state.HAS_AUTO_CROP and state.auto_crop is not None:
+                    return state.auto_crop.calculate_auto_crop_box(img, 1.0)
 
                 return (0, 0, img_w, img_h)
         except Exception:

@@ -189,6 +189,12 @@ class TaggerQueue:
             try:
                 first = self._q.get(timeout=self._drain_timeout)
             except queue.Empty:
+                # 一轮 batch 之间也清掉 current_file/active：上一批的最后一张文件名
+                # 会一直留着，UI 看起来像还在跑（即使 pending=processing=0）。
+                with self._lock:
+                    if self._status["active"] or self._status["current_file"]:
+                        self._status["active"] = False
+                        self._status["current_file"] = ""
                 continue
             if first == "__STOP__":
                 break
@@ -209,6 +215,11 @@ class TaggerQueue:
                 continue
 
             self._process_batch(batch)
+
+        # 退出循环时把 active 状态清掉
+        with self._lock:
+            self._status["active"] = False
+            self._status["current_file"] = ""
 
     def _process_batch(self, batch: List[str]):
         settings = self._get_settings() or {}

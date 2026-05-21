@@ -11,11 +11,16 @@ from typing import Any, Optional
 session: Any = None
 
 # ============== 子模块可用性 + 句柄 ==============
-HAS_CORE: bool = False
-core_logic: Any = None  # 引用 drop.py 模块（含 calculate_auto_crop_box / get_upscaler / ENABLE_UPSCALING）
+# 自动裁切建议（旧 drop.calculate_auto_crop_box 抽到 webapp.auto_crop）
+HAS_AUTO_CROP: bool = False
+auto_crop: Any = None
+
+# RealESRGAN 超分（旧 drop.get_upscaler 抽到 webapp.upscale）
+HAS_UPSCALE: bool = False
+upscale: Any = None
 
 HAS_VIDEO: bool = False
-video_logic: Any = None  # 引用 get_pictures.py 模块
+video: Any = None  # 引用 webapp.video 模块（旧 get_pictures.py 抽过来的）
 
 HAS_TAGGER: bool = False
 tagger_queue: Optional[Any] = None  # 引用 tagger.api_router.tagger_queue

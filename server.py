@@ -74,30 +74,34 @@ from webapp.session_manager import session
 from webapp.thumbnails import remove_thumb_cache
 from webapp.vendor import ensure_vendor_files
 
-# ============== 可选业务模块（drop / get_pictures / tagger） ==============
+# ============== 可选业务模块（auto_crop / upscale / get_pictures / tagger） ==============
+# 自动裁切建议（边缘 + 显著性 + 阈值融合），抽自旧 drop.py
 try:
-    import drop as core_logic
-    state.HAS_CORE = True
-    state.core_logic = core_logic
-    print("✅ 已加载 drop.py 核心逻辑（超分辨率可用）")
-except ImportError as e:
-    msg = str(e)
-    if "drop" in msg:
-        print("⚠️ 未找到 drop.py，超分辨率不可用")
-    else:
-        print(f"⚠️ drop.py 加载失败，缺少依赖库: {msg}")
+    from webapp import auto_crop as _auto_crop_mod
+    state.HAS_AUTO_CROP = True
+    state.auto_crop = _auto_crop_mod
+    print("✅ 已加载自动裁切模块 (webapp.auto_crop)")
+except Exception as e:
+    print(f"⚠️ 自动裁切模块加载失败: {e}")
 
+# RealESRGAN 超分，抽自旧 drop.py。缺 torch/realesrgan/权重时仍可 import，
+# upscale.upscale() 内部会自动回退到 PIL LANCZOS。
 try:
-    import get_pictures as video_logic
+    from webapp import upscale as _upscale_mod
+    state.HAS_UPSCALE = True
+    state.upscale = _upscale_mod
+    print(f"✅ 已加载超分模块 (webapp.upscale, ENABLE_UPSCALING={_upscale_mod.ENABLE_UPSCALING})")
+except Exception as e:
+    print(f"⚠️ 超分模块加载失败: {e}")
+
+# 视频关键帧抽取（旧 get_pictures.py 抽到 webapp.video）
+try:
+    from webapp import video as _video_mod
     state.HAS_VIDEO = True
-    state.video_logic = video_logic
-    print("✅ 已加载 get_pictures.py 视频处理逻辑")
-except ImportError as e:
-    msg = str(e)
-    if "get_pictures" in msg:
-        print("⚠️ 未找到 get_pictures.py，视频功能不可用")
-    else:
-        print(f"⚠️ get_pictures.py 加载失败，缺少依赖库: {msg}")
+    state.video = _video_mod
+    print("✅ 已加载视频模块 (webapp.video)")
+except Exception as e:
+    print(f"⚠️ 视频模块加载失败: {e}")
 
 # Tagger（ONNX 反推标签 + 后台联动队列）
 try:

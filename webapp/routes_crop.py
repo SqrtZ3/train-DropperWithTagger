@@ -94,35 +94,41 @@ async def process_batch(req: BatchProcessRequest = BatchProcessRequest()):
         if res in viable_buckets:
             for item in items:
                 final_tasks.append({"item": item, "target_res": res})
-        else:
-            current_ar = res[0] / res[1]
-            candidates = sorted(viable_list, key=lambda vr: abs((vr[0] / vr[1]) - current_ar))
+            continue
 
-            for item in items:
-                merged = False
-                for target_res in candidates:
-                    try:
-                        img_data = session._get_image_data(item["filepath"])
-                        if not img_data:
-                            continue
+        current_ar = res[0] / res[1]
+        candidates = sorted(viable_list, key=lambda vr: abs((vr[0] / vr[1]) - current_ar))
 
-                        with Image.open(img_data) as img:
-                            img_w, img_h = img.size
-                            adjust_crop_box(
-                                item["x"], item["y"], item["w"], item["h"],
-                                target_res[0], target_res[1], img_w, img_h,
-                            )
-                            final_tasks.append({"item": item, "target_res": target_res})
-                            merged_count += 1
-                            merged = True
-                            break
-                    except Exception as e:
-                        print(f"Merge error: {e}")
-                        continue
+        # 同一张源图被合并候选时只读一次像素
+        for item in items:
+            img_data = session._get_image_data(item["filepath"])
+            if not img_data:
+                print(f"   ! 无法读取，保持原样: {item['filename']}")
+                final_tasks.append({"item": item, "target_res": res})
+                continue
 
-                if not merged:
-                    print(f"   ! 无法归并: {item['filename']} (保持原样)")
-                    final_tasks.append({"item": item, "target_res": res})
+            try:
+                with Image.open(img_data) as img:
+                    img_w, img_h = img.size
+            except Exception as e:
+                print(f"   ! 打开失败 {item['filename']}: {e}（保持原样）")
+                final_tasks.append({"item": item, "target_res": res})
+                continue
+
+            # 真正修正 item 的裁切框使其适配目标桶比例。
+            # 候选已按宽高比距离排序，第一个就是"最接近"的目标桶；只要选区在图内有效就接受。
+            target_res = candidates[0]
+            adj_x, adj_y, adj_w, adj_h = adjust_crop_box(
+                item["x"], item["y"], item["w"], item["h"],
+                target_res[0], target_res[1], img_w, img_h,
+            )
+            if adj_w > 0 and adj_h > 0:
+                item["x"], item["y"], item["w"], item["h"] = adj_x, adj_y, adj_w, adj_h
+                final_tasks.append({"item": item, "target_res": target_res})
+                merged_count += 1
+            else:
+                print(f"   ! 无法归并: {item['filename']} (保持原样)")
+                final_tasks.append({"item": item, "target_res": res})
 
     print(f"🔄 优化完成: {merged_count} 张图片被重新归类，生成 {len(viable_buckets)} 个主桶")
 
@@ -165,13 +171,10 @@ async def process_batch(req: BatchProcessRequest = BatchProcessRequest()):
 
                 cropped = img.crop((adj_x, adj_y, adj_x + adj_w, adj_y + adj_h))
 
-                if state.HAS_CORE and getattr(state.core_logic, "ENABLE_UPSCALING", False):
-                    if adj_w < target_w or adj_h < target_h:
-                        try:
-                            upscaler = state.core_logic.get_upscaler()
-                            cropped = upscaler.upscale(cropped)
-                        except Exception as e:
-                            print(f"⚠️ 超分失败 {item.get('filename')}: {e}")
+                if state.HAS_UPSCALE and state.upscale is not None:
+                    cropped = state.upscale.maybe_upscale(
+                        cropped, target_w, target_h, item.get("filename", ""),
+                    )
 
                 final = cropped.resize((target_w, target_h), Image.Resampling.LANCZOS)
                 final.save(out_path, "PNG", quality=95)
@@ -190,8 +193,14 @@ async def process_batch(req: BatchProcessRequest = BatchProcessRequest()):
         except Exception as e:
             print(f"❌ 处理失败 {item['filename']}: {e}")
 
+    # 导出完只清空队列、把空 queue 同步到磁盘。
+    # 之前用 session.clear_session() 会把整个 session_state.json + .thumb_cache 都删掉，
+    # 用户做了 600 张精修加队列、点导出之后，下次同输入/输出目录初始化就拿不回那 600 张
+    # 的 cropped 标记，1000 张图全部按 pending 重扫，分批工作流被打断。
+    # items / current_index / ignored_files 保留，让用户能继续做剩下的图。
     session.queue = []
-    session.clear_session()
+    session.op_history = []
+    session._save_state()
 
     return {
         "status": "completed",
@@ -268,13 +277,8 @@ async def auto_bucket_all(req: AutoBucketRequest = AutoBucketRequest()):
 
                 cropped = img.crop((cx, cy, cx + cw, cy + ch))
 
-                if (state.HAS_CORE and getattr(state.core_logic, "ENABLE_UPSCALING", False)
-                        and (cw < tgt_w or ch < tgt_h)):
-                    try:
-                        upscaler = state.core_logic.get_upscaler()
-                        cropped = upscaler.upscale(cropped)
-                    except Exception as ue:
-                        print(f"⚠️ 超分失败 {src_path}: {ue}")
+                if state.HAS_UPSCALE and state.upscale is not None:
+                    cropped = state.upscale.maybe_upscale(cropped, tgt_w, tgt_h, src_path)
 
                 final = cropped.resize((tgt_w, tgt_h), Image.Resampling.LANCZOS)
 

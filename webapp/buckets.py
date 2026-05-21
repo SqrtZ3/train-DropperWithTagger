@@ -63,10 +63,13 @@ def adjust_crop_box(x: float, y: float, w: float, h: float,
     if new_x + new_w > img_w: new_x = img_w - new_w
     if new_y + new_h > img_h: new_y = img_h - new_h
 
-    new_w = min(new_w, img_w - new_x)
-    new_h = min(new_h, img_h - new_y)
-
-    return int(new_x), int(new_y), int(new_w), int(new_h)
+    # 先把左上角 floor 成 int，再用 int 后的值算右下边界；否则浮点 new_x 截断后
+    # new_w 可能多出 1 px，最终 new_x_int + new_w_int > img_w → PIL.crop 越界出黑边。
+    ix = max(0, int(new_x))
+    iy = max(0, int(new_y))
+    iw = max(0, min(int(new_w), img_w - ix))
+    ih = max(0, min(int(new_h), img_h - iy))
+    return ix, iy, iw, ih
 
 
 def smart_crop_box(img_w: int, img_h: int,

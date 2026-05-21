@@ -43,12 +43,6 @@ class AutoTagToggle(BaseModel):
     enabled: bool
 
 
-class VideoExtractRequest(BaseModel):
-    video_path: str
-    output_dir: Optional[str] = None
-    frame_count: Optional[int] = 3
-
-
 class VideoProbeRequest(BaseModel):
     video_path: str
     scene_threshold: Optional[float] = None

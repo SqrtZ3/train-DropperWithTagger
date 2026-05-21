@@ -1,4 +1,7 @@
-# webapp/routes_video.py — 视频抽帧：旧 /api/extract_video + 两步式 /api/video/*
+# webapp/routes_video.py — 视频抽帧：两步式 /api/video/probe + /api/video/save
+#
+# 旧 /api/extract_video 一键路由已删除：前端 (screens/video.jsx) 走 probe + save 流程，
+# 没人调旧路由。需要的话从 git 历史里捞回来。
 
 import os
 import shutil
@@ -13,7 +16,7 @@ from fastapi.responses import FileResponse, JSONResponse
 
 from webapp import state
 from webapp.config import SCRIPT_DIR, VIDEO_JOB_LIMIT, VIDEO_JOB_TTL_SEC
-from webapp.schemas import VideoExtractRequest, VideoProbeRequest, VideoSaveRequest
+from webapp.schemas import VideoProbeRequest, VideoSaveRequest
 
 
 router = APIRouter()
@@ -66,30 +69,6 @@ def cleanup_all_video_jobs() -> None:
 
 
 # ============== 路由 ==============
-@router.post("/api/extract_video")
-async def extract_video(req: VideoExtractRequest):
-    """旧版「一键抽帧」入口；保留向后兼容。新前端走 /api/video/probe + /api/video/save。"""
-    if not state.HAS_VIDEO:
-        return JSONResponse(content={"error": "Video module not loaded"}, status_code=500)
-
-    video_path = req.video_path.strip()
-    if not os.path.exists(video_path):
-        return JSONResponse(content={"error": f"Video not found: {video_path}"}, status_code=404)
-
-    output_dir = req.output_dir
-    if not output_dir:
-        output_dir = os.path.join(os.path.dirname(video_path), "extracted_frames")
-
-    try:
-        count, _ = state.video_logic.extract_frames_from_video(
-            video_path, output_dir,
-            frames_per_video=req.frame_count or 3, start_counter=1,
-        )
-        return {"status": "success", "extracted_count": count, "output_dir": output_dir}
-    except Exception as e:
-        return JSONResponse(content={"error": f"Extraction failed: {e}"}, status_code=500)
-
-
 @router.post("/api/video/probe")
 async def video_probe(req: VideoProbeRequest):
     """分析视频，返回所有候选关键帧 + 它们的缩略图 URL。不写出任何最终文件。"""
@@ -100,10 +79,10 @@ async def video_probe(req: VideoProbeRequest):
         return JSONResponse(content={"error": "请提供视频路径"}, status_code=400)
     if not os.path.exists(video_path):
         return JSONResponse(content={"error": f"找不到视频文件: {video_path}"}, status_code=404)
-    if not state.video_logic.is_video_path(video_path):
+    if not state.video.is_video_path(video_path):
         return JSONResponse(content={
             "error": f"不支持的视频扩展名: {os.path.splitext(video_path)[1]}",
-            "supported": list(state.video_logic.SUPPORTED_VIDEO_EXTENSIONS),
+            "supported": list(state.video.SUPPORTED_VIDEO_EXTENSIONS),
         }, status_code=400)
 
     _gc_video_jobs()
@@ -113,7 +92,7 @@ async def video_probe(req: VideoProbeRequest):
 
     scene_thr = req.scene_threshold if req.scene_threshold is not None else 0.4
     try:
-        info = state.video_logic.probe_video_keyframes(
+        info = state.video.probe_video_keyframes(
             video_path,
             scene_threshold=float(scene_thr),
             max_candidates=int(req.max_candidates or 0),
@@ -197,7 +176,7 @@ async def video_save(req: VideoSaveRequest):
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        saved, written = state.video_logic.save_selected_keyframes(
+        saved, written = state.video.save_selected_keyframes(
             video_path, output_dir, req.indices,
             name_prefix=req.name_prefix or None,
             start_counter=1, zero_pad=4,
@@ -232,6 +211,6 @@ async def video_supported():
     if not state.HAS_VIDEO:
         return {"supported": [], "enabled": False}
     return {
-        "supported": list(state.video_logic.SUPPORTED_VIDEO_EXTENSIONS),
+        "supported": list(state.video.SUPPORTED_VIDEO_EXTENSIONS),
         "enabled": True,
     }

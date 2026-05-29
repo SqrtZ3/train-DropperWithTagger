@@ -184,15 +184,24 @@ function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onCh
                     <button
                         className="btn-icon"
                         onMouseDown={(e) => e.stopPropagation()}
+                        // 触摸屏必须显式 stopPropagation，否则事件冒泡到 CropBox
+                        // 的 onTouchStart={makeHandle('move')}，触发框拖动 + preventDefault
+                        // 让浏览器不再生成 click，删除永远不会发生。
+                        onTouchStart={(e) => e.stopPropagation()}
                         onClick={(e) => { e.stopPropagation(); onDelete(); }}
                         style={{
-                            position: 'absolute', top: -1, right: -1,
-                            width: 22, height: 22, background: color,
-                            color: 'var(--accent-ink)', borderRadius: '0 0 0 4px',
+                            position: 'absolute', top: -14, right: -14,
+                            width: 28, height: 28, background: color,
+                            color: 'var(--accent-ink)',
+                            borderRadius: '50%',
+                            border: '2px solid var(--surface-0)',
+                            boxShadow: '0 1px 4px rgba(0,0,0,.5)',
+                            touchAction: 'none',
+                            zIndex: 60,
                         }}
                         title="删除此框"
                     >
-                        <I.Close size={12} strokeWidth={2.5}/>
+                        <I.Close size={14} strokeWidth={2.5}/>
                     </button>
                     {['nw','ne','sw','se'].map(c => (
                         <div key={c}
@@ -238,7 +247,14 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
     const [aspectRatio, setAspectRatio] = React.useState(localStorage.getItem('drop.cropAspectRatio') || 'free');
 
     const dragStart = React.useRef(null);
-    const [drawingBox, setDrawingBox] = React.useState(null);
+    // drawingBox 既要驱动渲染（虚线预览框）又要在 mouseup 回调里读"最新值"。
+    // 之前只用 useState：mouseup 闭包里看到的是 mousedown 时的快照（一般是 null），
+    // 导致 (1) 正常拖拽其实从不创建新框；(2) 上次 mouseup 丢失时残留的非 null
+    // 旧值，让下次随便点一下都凭空冒出一个框。
+    // 改成 ref + state 并行：move 同步写两份，up 从 ref 读最新值。
+    const drawingBoxRef = React.useRef(null);
+    const [drawingBox, setDrawingBoxState] = React.useState(null);
+    const setDrawingBox = (v) => { drawingBoxRef.current = v; setDrawingBoxState(v); };
     const localNavTouchedRef = React.useRef(0);
 
     React.useEffect(() => {
@@ -708,25 +724,25 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
                             const up = () => {
                                 window.removeEventListener('mousemove', move);
                                 window.removeEventListener('mouseup', up);
-                                
-                                if (dragStart.current && drawingBox && drawingBox.w > 15 && drawingBox.h > 15) {
-                                    const newIdx = crops.length;
-                                    const newCrop = {
-                                        x: drawingBox.x,
-                                        y: drawingBox.y,
-                                        w: drawingBox.w,
-                                        h: drawingBox.h,
-                                        idx: newIdx
-                                    };
-                                    setCrops(cs => [...cs, newCrop]);
-                                    setActiveIdx(newIdx);
+                                window.removeEventListener('blur', up);
+
+                                // 从 ref 读最新值，避免闭包快照导致永远是 null（或残留旧值）。
+                                const box = drawingBoxRef.current;
+                                if (dragStart.current && box && box.w > 15 && box.h > 15) {
+                                    setCrops(cs => [...cs, {
+                                        x: box.x, y: box.y, w: box.w, h: box.h, idx: cs.length,
+                                    }]);
+                                    setActiveIdx(crops.length);
                                 }
                                 dragStart.current = null;
                                 setDrawingBox(null);
                             };
-                            
+
                             window.addEventListener('mousemove', move);
                             window.addEventListener('mouseup', up);
+                            // blur 兜底：alt+tab / 窗口失焦时浏览器可能吞掉 mouseup，
+                            // 让 dragStart + drawingBox 残留，下次点击就会"凭空"创建框。
+                            window.addEventListener('blur', up);
                         }}
                         style={{ position: 'relative', width: info.width * scale, height: info.height * scale, cursor: 'crosshair' }}
                     >

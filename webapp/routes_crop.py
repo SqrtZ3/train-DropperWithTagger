@@ -11,13 +11,50 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from PIL import Image
 
-from webapp import state
-from webapp.buckets import adjust_crop_box, calculate_output_size, smart_crop_box
+from webapp.buckets import (
+    adjust_crop_box,
+    calculate_output_size,
+    downsample_preserving_detail,
+    plan_arb_export,
+    smart_crop_box,
+)
 from webapp.schemas import AutoBucketRequest, BatchProcessRequest, SaveCropRequest
 from webapp.session_manager import session
 
 
 router = APIRouter()
+
+
+def _bucket_options(req):
+    return {
+        "base_resos": req.bucket_base_resos,
+        "min_base_reso": req.bucket_min_base_reso or 0,
+        "max_base_reso": req.bucket_max_base_reso or 0,
+        "output_max_base_reso": req.output_max_base_reso or 0,
+        "base_reso_step": req.bucket_base_reso_steps or 256,
+        "min_reso": req.min_bucket_reso or 512,
+        "max_reso": req.max_bucket_reso or 2048,
+        "step": req.step or session.step,
+        "no_upscale": True,
+    }
+
+
+def _export_crop(cropped: Image.Image, target_w: int, target_h: int,
+                 req) -> tuple[Image.Image, str, tuple[int, int]]:
+    strategy = (req.export_strategy or "arb_crop").lower()
+    if strategy in ("resize", "bucket_resize", "legacy"):
+        return (
+            cropped.resize((target_w, target_h), Image.Resampling.LANCZOS),
+            "resize",
+            (target_w, target_h),
+        )
+
+    plan = plan_arb_export(cropped.width, cropped.height, **_bucket_options(req))
+    cx, cy, cw, ch = plan.crop_box
+    final = cropped.crop((cx, cy, cx + cw, cy + ch))
+    if plan.needs_resize:
+        final = downsample_preserving_detail(final, plan.output_size)
+    return final, plan.action, plan.bucket_size
 
 
 @router.post("/api/save")
@@ -170,13 +207,7 @@ async def process_batch(req: BatchProcessRequest = BatchProcessRequest()):
                     img = img.convert("RGB")
 
                 cropped = img.crop((adj_x, adj_y, adj_x + adj_w, adj_y + adj_h))
-
-                if state.HAS_UPSCALE and state.upscale is not None:
-                    cropped = state.upscale.maybe_upscale(
-                        cropped, target_w, target_h, item.get("filename", ""),
-                    )
-
-                final = cropped.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                final, _, _ = _export_crop(cropped, target_w, target_h, req)
                 final.save(out_path, "PNG", quality=95)
 
                 if not item["filepath"].startswith("zip://"):
@@ -244,6 +275,8 @@ async def auto_bucket_all(req: AutoBucketRequest = AutoBucketRequest()):
     skipped = 0
     errors: List[Dict[str, str]] = []
     bucket_summary: Dict[tuple, int] = defaultdict(int)
+    export_summary: Dict[tuple, int] = defaultdict(int)
+    action_summary: Dict[str, int] = defaultdict(int)
 
     name_tmpl = req.name_template or "auto_{idx:05d}.png"
     counter = 0
@@ -276,14 +309,12 @@ async def auto_bucket_all(req: AutoBucketRequest = AutoBucketRequest()):
                     img = img.convert("RGB")
 
                 cropped = img.crop((cx, cy, cx + cw, cy + ch))
-
-                if state.HAS_UPSCALE and state.upscale is not None:
-                    cropped = state.upscale.maybe_upscale(cropped, tgt_w, tgt_h, src_path)
-
-                final = cropped.resize((tgt_w, tgt_h), Image.Resampling.LANCZOS)
+                final, action, export_bucket = _export_crop(cropped, tgt_w, tgt_h, req)
+                export_summary[(final.width, final.height)] += 1
+                action_summary[action] += 1
 
                 out_name = name_tmpl.format(
-                    idx=counter, w=tgt_w, h=tgt_h,
+                    idx=counter, w=final.width, h=final.height,
                     basename=os.path.splitext(os.path.basename(
                         src_path.split("::")[-1] if "::" in src_path else src_path
                     ))[0],
@@ -333,6 +364,11 @@ async def auto_bucket_all(req: AutoBucketRequest = AutoBucketRequest()):
         "error_count": len(errors),
         "output_folder": out_root,
         "buckets": [{"w": bw, "h": bh, "count": c} for (bw, bh), c in summary],
+        "export_sizes": [
+            {"w": bw, "h": bh, "count": c}
+            for (bw, bh), c in sorted(export_summary.items(), key=lambda kv: -kv[1])
+        ],
+        "actions": dict(action_summary),
         "target_mp": session.target_mp,
         "step": session.step,
     }

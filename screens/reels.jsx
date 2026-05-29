@@ -16,9 +16,21 @@ function ReelsScreen({ session, refresh, targetMP, setTargetMP, step, setStep })
     // auto-mode-only options
     const [includeProcessed, setIncludeProcessed] = React.useState(false);
     const [subdir, setSubdir] = React.useState('');
+    const [exportStrategy, setExportStrategy] = React.useState(localStorage.getItem('drop.exportStrategy') || 'arb_crop');
+    const [bucketBases, setBucketBases] = React.useState(localStorage.getItem('drop.bucketBases') || '512,768,1024,1536,2048');
+    const [bucketMaxBase, setBucketMaxBase] = React.useState(parseInt(localStorage.getItem('drop.bucketMaxBase')) || 2048);
+    const [outputMaxBase, setOutputMaxBase] = React.useState(parseInt(localStorage.getItem('drop.outputMaxBase')) || 1024);
+    const [minBucketReso, setMinBucketReso] = React.useState(parseInt(localStorage.getItem('drop.minBucketReso')) || 512);
+    const [maxBucketReso, setMaxBucketReso] = React.useState(parseInt(localStorage.getItem('drop.maxBucketReso')) || 2048);
 
     React.useEffect(() => { localStorage.setItem('drop.reelsMode', mode); }, [mode]);
     React.useEffect(() => { localStorage.setItem('drop.minBucket', String(minBucket)); }, [minBucket]);
+    React.useEffect(() => { localStorage.setItem('drop.exportStrategy', exportStrategy); }, [exportStrategy]);
+    React.useEffect(() => { localStorage.setItem('drop.bucketBases', bucketBases); }, [bucketBases]);
+    React.useEffect(() => { localStorage.setItem('drop.bucketMaxBase', String(bucketMaxBase)); }, [bucketMaxBase]);
+    React.useEffect(() => { localStorage.setItem('drop.outputMaxBase', String(outputMaxBase)); }, [outputMaxBase]);
+    React.useEffect(() => { localStorage.setItem('drop.minBucketReso', String(minBucketReso)); }, [minBucketReso]);
+    React.useEffect(() => { localStorage.setItem('drop.maxBucketReso', String(maxBucketReso)); }, [maxBucketReso]);
 
     if (!session?.is_initialized) {
         return <div className="center" style={{ flex: 1, color: 'var(--text-3)' }}>请先在主页初始化会话</div>;
@@ -28,6 +40,17 @@ function ReelsScreen({ session, refresh, targetMP, setTargetMP, step, setStep })
     const processed = session.processed_count || 0;
     const pending = Math.max(0, totalSource - processed);
     const queueLen = session.queue_len || 0;
+    const bucketBaseList = bucketBases.split(',')
+        .map(v => parseInt(v.trim()))
+        .filter(v => Number.isFinite(v) && v > 0);
+    const exportOptions = {
+        export_strategy: exportStrategy,
+        bucket_base_resos: bucketBaseList.length ? bucketBaseList : null,
+        bucket_max_base_reso: Math.max(1, bucketMaxBase | 0),
+        output_max_base_reso: Math.max(1, outputMaxBase | 0),
+        min_bucket_reso: Math.max(1, minBucketReso | 0),
+        max_bucket_reso: Math.max(1, maxBucketReso | 0),
+    };
 
     async function run() {
         if (busy) return;
@@ -37,6 +60,7 @@ function ReelsScreen({ session, refresh, targetMP, setTargetMP, step, setStep })
             if (mode === 'auto') {
                 const r = await api.post('/api/auto_bucket_all', {
                     target_mp: targetMP, step,
+                    ...exportOptions,
                     include_processed: includeProcessed,
                     output_subdir: subdir.trim() || null,
                 });
@@ -49,6 +73,7 @@ function ReelsScreen({ session, refresh, targetMP, setTargetMP, step, setStep })
             } else {
                 const r = await api.post('/api/process_batch', {
                     target_mp: targetMP, step,
+                    ...exportOptions,
                     min_bucket_size: Math.max(1, minBucket | 0),
                 });
                 if (r.status === 'empty') {
@@ -121,6 +146,53 @@ function ReelsScreen({ session, refresh, targetMP, setTargetMP, step, setStep })
                         targetMP={targetMP} setTargetMP={setTargetMP}
                         step={step} setStep={setStep}
                     />
+                </Panel>
+
+                <Panel eyebrow="ARB Export">
+                    <div className="col" style={{ padding: 14, gap: 12 }}>
+                        <div className="row gap-2">
+                            {[
+                                { id: 'arb_crop', label: '裁切优先' },
+                                { id: 'resize', label: '旧版 resize' },
+                            ].map(o => (
+                                <button key={o.id}
+                                    className={'btn ' + (exportStrategy === o.id ? 'btn-primary' : '')}
+                                    onClick={() => setExportStrategy(o.id)}
+                                    type="button">
+                                    {o.label}
+                                </button>
+                            ))}
+                        </div>
+                        <div className="grid" style={{ gridTemplateColumns: '1fr 120px 120px', gap: 10 }}>
+                            <label className="col gap-1">
+                                <span className="eyebrow">base 列表</span>
+                                <input className="input mono" value={bucketBases}
+                                    onChange={e => setBucketBases(e.target.value)}/>
+                            </label>
+                            <label className="col gap-1">
+                                <span className="eyebrow">候选上限</span>
+                                <input className="input mono" type="number" min="1" value={bucketMaxBase}
+                                    onChange={e => setBucketMaxBase(parseInt(e.target.value) || 2048)}/>
+                            </label>
+                            <label className="col gap-1">
+                                <span className="eyebrow">输出上限</span>
+                                <input className="input mono" type="number" min="1" value={outputMaxBase}
+                                    onChange={e => setOutputMaxBase(parseInt(e.target.value) || 1024)}/>
+                            </label>
+                        </div>
+                        <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                            <label className="col gap-1">
+                                <span className="eyebrow">最小单边</span>
+                                <input className="input mono" type="number" min="1" value={minBucketReso}
+                                    onChange={e => setMinBucketReso(parseInt(e.target.value) || 512)}/>
+                            </label>
+                            <label className="col gap-1">
+                                <span className="eyebrow">最大单边</span>
+                                <input className="input mono" type="number" min="1" value={maxBucketReso}
+                                    onChange={e => setMaxBucketReso(parseInt(e.target.value) || 2048)}/>
+                            </label>
+                        </div>
+                    </div>
                 </Panel>
 
                 {mode === 'auto' && (

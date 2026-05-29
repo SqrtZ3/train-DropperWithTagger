@@ -1,9 +1,21 @@
 # webapp/buckets.py — 分桶数学
 
 import math
+from dataclasses import dataclass
 from typing import List, Tuple
 
+from PIL import Image
+
 from webapp.config import BUCKET_STEP_SIZE, TARGET_PIXEL_AREA
+
+
+@dataclass(frozen=True)
+class ArbExportPlan:
+    bucket_size: Tuple[int, int]
+    crop_box: Tuple[int, int, int, int]
+    output_size: Tuple[int, int]
+    action: str
+    needs_resize: bool
 
 
 def get_standard_buckets(target_area: int = TARGET_PIXEL_AREA,
@@ -33,6 +45,212 @@ def calculate_output_size(crop_w: int, crop_h: int,
     current_ar = crop_w / crop_h
     buckets = get_standard_buckets(target_area, step)
     return min(buckets, key=lambda res: abs(res[0] / res[1] - current_ar))
+
+
+def _normalize_base_resos(base_resos=None, min_base_reso: int = 0,
+                          max_base_reso: int = 0,
+                          base_reso_step: int = 256,
+                          fallback_base: int = 1024,
+                          min_reso: int = 512) -> List[int]:
+    if base_resos:
+        if isinstance(base_resos, str):
+            raw_values = [v.strip() for v in base_resos.split(",")]
+        else:
+            raw_values = list(base_resos)
+        values = []
+        for value in raw_values:
+            if value is None or value == "":
+                continue
+            ivalue = int(value)
+            if ivalue > 0:
+                values.append(ivalue)
+        if values:
+            return sorted(set(values))
+
+    max_base = int(max_base_reso or 0)
+    if max_base > 0:
+        min_base = int(min_base_reso or 0) or int(min_reso or fallback_base)
+        step = max(1, int(base_reso_step or 256))
+        if min_base > max_base:
+            min_base, max_base = max_base, min_base
+        values = list(range(min_base, max_base + 1, step))
+        if not values or values[-1] != max_base:
+            values.append(max_base)
+        return sorted(set(v for v in values if v > 0))
+
+    return [int(fallback_base)]
+
+
+def get_arb_buckets(base_resos=None, min_base_reso: int = 0,
+                    max_base_reso: int = 0, base_reso_step: int = 256,
+                    min_reso: int = 512, max_reso: int = 2048,
+                    step: int = BUCKET_STEP_SIZE) -> List[Tuple[int, int]]:
+    bases = _normalize_base_resos(
+        base_resos, min_base_reso, max_base_reso, base_reso_step,
+        fallback_base=int(math.sqrt(TARGET_PIXEL_AREA)), min_reso=min_reso,
+    )
+    buckets = []
+    seen = set()
+    min_r = max(1, int(min_reso))
+    max_r = max(min_r, int(max_reso))
+    step = max(1, int(step or BUCKET_STEP_SIZE))
+    for base in bases:
+        area = base * base
+        for w in range(min_r, max_r + 1, step):
+            for h in range(min_r, max_r + 1, step):
+                if abs((w * h) - area) / max(1, area) > 0.1:
+                    continue
+                if max(w / h, h / w) > 2.0:
+                    continue
+                if (w, h) in seen:
+                    continue
+                seen.add((w, h))
+                buckets.append((w, h))
+    return sorted(buckets, key=lambda b: (b[0] * b[1], b[0], b[1]))
+
+
+def _bucket_score(bucket: Tuple[int, int], w: int, h: int):
+    bw, bh = bucket
+    aspect_diff = abs((w / h) - (bw / bh))
+    scale = max(bw / max(1, w), bh / max(1, h))
+    scale_diff = abs(math.log(max(scale, 1e-8)))
+    area_diff = abs((bw * bh) - (w * h)) / max(1, w * h)
+    return aspect_diff, scale_diff, area_diff
+
+
+def choose_arb_bucket(w: int, h: int, *, base_resos=None,
+                      min_base_reso: int = 0, max_base_reso: int = 0,
+                      base_reso_step: int = 256, min_reso: int = 512,
+                      max_reso: int = 2048, step: int = BUCKET_STEP_SIZE,
+                      no_upscale: bool = True) -> Tuple[int, int]:
+    buckets = get_arb_buckets(
+        base_resos=base_resos, min_base_reso=min_base_reso,
+        max_base_reso=max_base_reso, base_reso_step=base_reso_step,
+        min_reso=min_reso, max_reso=max_reso, step=step,
+    )
+    if not buckets:
+        return calculate_output_size(w, h, target_area=TARGET_PIXEL_AREA, step=step)
+
+    candidates = buckets
+    if no_upscale:
+        candidates = [
+            (bw, bh) for bw, bh in buckets
+            if bw <= max(1, w) and bh <= max(1, h)
+        ]
+    if not candidates:
+        candidates = buckets
+    return min(candidates, key=lambda b: _bucket_score(b, w, h))
+
+
+def _center_crop_box_for_size(src_w: int, src_h: int,
+                              crop_w: int, crop_h: int) -> Tuple[int, int, int, int]:
+    crop_w = max(1, min(int(crop_w), int(src_w)))
+    crop_h = max(1, min(int(crop_h), int(src_h)))
+    x = max(0, (int(src_w) - crop_w) // 2)
+    y = max(0, (int(src_h) - crop_h) // 2)
+    return x, y, crop_w, crop_h
+
+
+def _crop_to_bucket_pixels(src_w: int, src_h: int,
+                           bucket_w: int, bucket_h: int) -> Tuple[int, int, int, int]:
+    if bucket_w <= src_w and bucket_h <= src_h:
+        return _center_crop_box_for_size(src_w, src_h, bucket_w, bucket_h)
+    return smart_crop_box(src_w, src_h, bucket_w, bucket_h)
+
+
+def _crop_to_bucket_aspect(src_w: int, src_h: int,
+                           bucket_w: int, bucket_h: int,
+                           snap_loss_threshold: float = 0.12) -> Tuple[int, int, int, int]:
+    aspect_crop = smart_crop_box(src_w, src_h, bucket_w, bucket_h)
+    if bucket_w > src_w or bucket_h > src_h:
+        return aspect_crop
+
+    snap_area = bucket_w * bucket_h
+    aspect_area = aspect_crop[2] * aspect_crop[3]
+    loss = 1.0 - (snap_area / max(1, aspect_area))
+    if loss <= max(0.0, float(snap_loss_threshold)):
+        return _center_crop_box_for_size(src_w, src_h, bucket_w, bucket_h)
+    return aspect_crop
+
+
+def _base_for_bucket(bucket: Tuple[int, int]) -> float:
+    return math.sqrt(max(1, bucket[0] * bucket[1]))
+
+
+def _find_output_bucket_for_limit(bucket: Tuple[int, int],
+                                  max_base_reso: int,
+                                  *, min_reso: int, step: int) -> Tuple[int, int]:
+    max_base = int(max_base_reso or 0)
+    if max_base <= 0 or _base_for_bucket(bucket) <= max_base:
+        return bucket
+
+    ar = bucket[0] / bucket[1]
+    target_w = math.sqrt((max_base * max_base) * ar)
+    target_h = target_w / ar
+    step = max(1, int(step or BUCKET_STEP_SIZE))
+    out_w = max(int(min_reso), int(round(target_w / step) * step))
+    out_h = max(int(min_reso), int(round(target_h / step) * step))
+    if out_w * out_h > max_base * max_base * 1.1:
+        scale = math.sqrt((max_base * max_base) / (out_w * out_h))
+        out_w = max(int(min_reso), int(math.floor(out_w * scale / step) * step))
+        out_h = max(int(min_reso), int(math.floor(out_h * scale / step) * step))
+    return max(1, out_w), max(1, out_h)
+
+
+def plan_arb_export(src_w: int, src_h: int, *, base_resos=None,
+                    min_base_reso: int = 0, max_base_reso: int = 0,
+                    output_max_base_reso: int = 0,
+                    base_reso_step: int = 256, min_reso: int = 512,
+                    max_reso: int = 2048, step: int = BUCKET_STEP_SIZE,
+                    no_upscale: bool = True) -> ArbExportPlan:
+    bucket = choose_arb_bucket(
+        src_w, src_h, base_resos=base_resos,
+        min_base_reso=min_base_reso, max_base_reso=max_base_reso,
+        base_reso_step=base_reso_step, min_reso=min_reso,
+        max_reso=max_reso, step=step, no_upscale=no_upscale,
+    )
+    crop_box = _crop_to_bucket_aspect(src_w, src_h, bucket[0], bucket[1])
+    if no_upscale and (bucket[0] > src_w or bucket[1] > src_h):
+        return ArbExportPlan(
+            bucket_size=bucket,
+            crop_box=crop_box,
+            output_size=(crop_box[2], crop_box[3]),
+            action="keep",
+            needs_resize=False,
+        )
+    crop_size = (crop_box[2], crop_box[3])
+    if output_max_base_reso and _base_for_bucket(crop_size) > output_max_base_reso:
+        output_size = _find_output_bucket_for_limit(
+            crop_size, output_max_base_reso, min_reso=min_reso, step=step,
+        )
+    else:
+        output_size = crop_size
+    needs_resize = output_size != (crop_box[2], crop_box[3])
+    action = "downsample" if needs_resize else "crop"
+    return ArbExportPlan(
+        bucket_size=bucket,
+        crop_box=crop_box,
+        output_size=output_size,
+        action=action,
+        needs_resize=needs_resize,
+    )
+
+
+def downsample_preserving_detail(img, target_size: Tuple[int, int]):
+    target_w, target_h = int(target_size[0]), int(target_size[1])
+    if img.size == (target_w, target_h):
+        return img.copy()
+    if target_w >= img.width or target_h >= img.height:
+        return img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+
+    current = img
+    while current.width / target_w > 2.0 and current.height / target_h > 2.0:
+        next_size = (
+            max(target_w, int(current.width * 0.5)),
+            max(target_h, int(current.height * 0.5)),
+        )
+        current = current.resize(next_size, resample=Image.Resampling.BOX)
+    return current.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
 
 
 def adjust_crop_box(x: float, y: float, w: float, h: float,

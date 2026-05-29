@@ -24,15 +24,24 @@ class SaveCropRequest(BaseModel):
     status: str
 
 
-class BatchProcessRequest(BaseModel):
+class ExportBucketOptions(BaseModel):
+    export_strategy: Optional[str] = "arb_crop"
+    target_mp: Optional[float] = None
+    step: Optional[int] = None
+    bucket_base_resos: Optional[List[int]] = None
+    bucket_min_base_reso: Optional[int] = 0
+    bucket_max_base_reso: Optional[int] = 2048
+    output_max_base_reso: Optional[int] = 1024
+    bucket_base_reso_steps: Optional[int] = 256
+    min_bucket_reso: Optional[int] = 512
+    max_bucket_reso: Optional[int] = 2048
+
+
+class BatchProcessRequest(ExportBucketOptions):
     min_bucket_size: Optional[int] = 4
-    target_mp: Optional[float] = None
-    step: Optional[int] = None
 
 
-class AutoBucketRequest(BaseModel):
-    target_mp: Optional[float] = None
-    step: Optional[int] = None
+class AutoBucketRequest(ExportBucketOptions):
     scope: Optional[str] = "source"            # 'source' | 'pending'
     include_processed: Optional[bool] = False
     output_subdir: Optional[str] = None
@@ -45,6 +54,17 @@ class AutoTagToggle(BaseModel):
 
 class VideoProbeRequest(BaseModel):
     video_path: str
+    scene_threshold: Optional[float] = None
+    max_candidates: Optional[int] = 0
+    sample_rate_hz: Optional[float] = 4.0
+    # 仅当 video_path 是目录时生效；接收文件路径时忽略。
+    recursive: Optional[bool] = True
+
+
+class VideoProbeBatchRequest(BaseModel):
+    scan_id: str
+    # 指向 scan 结果里 videos[] 的下标
+    vids: List[int]
     scene_threshold: Optional[float] = None
     max_candidates: Optional[int] = 0
     sample_rate_hz: Optional[float] = 4.0

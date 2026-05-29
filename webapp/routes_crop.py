@@ -17,6 +17,7 @@ from webapp.buckets import (
     downsample_preserving_detail,
     plan_arb_export,
     smart_crop_box,
+    snap_to_texture_bucket,
 )
 from webapp.schemas import AutoBucketRequest, BatchProcessRequest, SaveCropRequest
 from webapp.session_manager import session
@@ -41,7 +42,7 @@ def _bucket_options(req):
 
 def _export_crop(cropped: Image.Image, target_w: int, target_h: int,
                  req) -> tuple[Image.Image, str, tuple[int, int]]:
-    strategy = (req.export_strategy or "arb_crop").lower()
+    strategy = (req.export_strategy or "resize").lower()
     if strategy in ("resize", "bucket_resize", "legacy"):
         return (
             cropped.resize((target_w, target_h), Image.Resampling.LANCZOS),
@@ -55,6 +56,54 @@ def _export_crop(cropped: Image.Image, target_w: int, target_h: int,
     if plan.needs_resize:
         final = downsample_preserving_detail(final, plan.output_size)
     return final, plan.action, plan.bucket_size
+
+
+def _flatten_to_rgb(img: Image.Image) -> Image.Image:
+    """透明图(RGBA/LA/带透明的 P)拍平到白底 RGB，其余转 RGB。"""
+    if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+        bg = Image.new("RGB", img.size, (255, 255, 255))
+        if img.mode != "RGBA":
+            img = img.convert("RGBA")
+        bg.paste(img, mask=img.split()[3])
+        return bg
+    if img.mode != "RGB":
+        return img.convert("RGB")
+    return img
+
+
+def _save_png(img: Image.Image, path: str) -> None:
+    """PNG 无损存盘。compress_level 只影响体积/速度、不动像素
+    （修原 `quality=95` 误用——PNG 无 quality 参数）。"""
+    img.save(path, "PNG", compress_level=6)
+
+
+def _copy_caption(src_filepath: str, out_path: str) -> None:
+    """把非 zip 源图旁的同名 .txt 复制到输出旁。"""
+    if src_filepath.startswith("zip://"):
+        return
+    src_txt = Path(src_filepath).with_suffix(".txt")
+    if src_txt.exists():
+        try:
+            shutil.copy2(src_txt, Path(out_path).with_suffix(".txt"))
+        except Exception:
+            pass
+
+
+def _export_texture(img: Image.Image, item: Dict, target_area: int,
+                    step: int, max_ar: float):
+    """纹理框：后端用 snap 重新校验框（不信任前端坐标），原生裁切、零重采样。
+    返回 (cropped, (bw, bh))；放不下任何桶或尺寸不符则返回 None。"""
+    snap = snap_to_texture_bucket(
+        item["x"], item["y"], item["w"], item["h"],
+        img.width, img.height, target_area=target_area, step=step, max_ar=max_ar,
+    )
+    if snap is None:
+        return None
+    nx, ny, bw, bh = snap
+    cropped = img.crop((nx, ny, nx + bw, ny + bh))
+    if cropped.size != (bw, bh):
+        return None
+    return cropped, (bw, bh)
 
 
 @router.post("/api/save")
@@ -91,144 +140,132 @@ async def undo_last():
 
 @router.post("/api/process_batch")
 async def process_batch(req: BatchProcessRequest = BatchProcessRequest()):
-    """执行批处理。"""
+    """执行批处理。普通框重采样贴桶；纹理框原生裁切零重采样写入 texture 子目录。"""
     if not session.queue:
         return {"status": "empty", "message": "队列为空"}
 
     session.set_target(target_mp=req.target_mp, step=req.step)
     target_area = session.target_area
     bucket_step = session.step
+    max_ar = req.texture_max_ar or 2.0
+
+    # 按 kind 分流：纹理框不参与桶合并
+    full_items = [it for it in session.queue if it.get("kind", "full") != "texture"]
+    texture_items = [it for it in session.queue if it.get("kind", "full") == "texture"]
 
     min_size = req.min_bucket_size if (req.min_bucket_size and req.min_bucket_size > 0) else 1
-    print(f"\n🚀 开始批处理 {len(session.queue)} 张图片 "
-          f"(最小成桶: {min_size}, 目标 {session.target_mp} MP · 步长 {bucket_step} px)...")
+    print(f"\n🚀 开始批处理：普通 {len(full_items)} · 纹理 {len(texture_items)} "
+          f"(最小成桶 {min_size} · 目标 {session.target_mp} MP · 步长 {bucket_step} px)...")
 
-    # 1. 初始分桶
-    buckets: Dict = {}
-    for item in session.queue:
-        target_res = calculate_output_size(item["w"], item["h"],
-                                           target_area=target_area, step=bucket_step)
-        buckets.setdefault(target_res, []).append(item)
-
-    print("📊 初始分布:")
-    for res, items in sorted(buckets.items(), key=lambda x: len(x[1]), reverse=True):
-        print(f"   - {res}: {len(items)} 张")
-
-    # 2. 识别合格桶
-    viable_buckets = {res for res, items in buckets.items() if len(items) >= min_size}
-
-    if not viable_buckets:
-        sorted_buckets = sorted(buckets.items(), key=lambda x: len(x[1]), reverse=True)
-        viable_buckets = {sorted_buckets[0][0]}
-        print(f"⚠️ 无合格桶，降级主桶 {sorted_buckets[0][0]} 为唯一目标")
-
-    # 3. 执行归并
-    final_tasks: List[Dict] = []
+    # 1~3. 普通框分桶 + 合并孤儿桶。只决定「裁向哪个桶」，不回写 item（修原地改写 bug）。
+    final_tasks: List[Dict] = []   # {item, target_res}
     merged_count = 0
-    viable_list = list(viable_buckets)
+    viable_buckets: set = set()
+    if full_items:
+        buckets: Dict = {}
+        for item in full_items:
+            target_res = calculate_output_size(item["w"], item["h"],
+                                               target_area=target_area, step=bucket_step)
+            buckets.setdefault(target_res, []).append(item)
 
-    for res, items in buckets.items():
-        if res in viable_buckets:
+        print("📊 初始分布:")
+        for res, items in sorted(buckets.items(), key=lambda x: len(x[1]), reverse=True):
+            print(f"   - {res}: {len(items)} 张")
+
+        viable_buckets = {res for res, items in buckets.items() if len(items) >= min_size}
+        if not viable_buckets:
+            main_res = max(buckets.items(), key=lambda x: len(x[1]))[0]
+            viable_buckets = {main_res}
+            print(f"⚠️ 无合格桶，降级主桶 {main_res} 为唯一目标")
+
+        viable_list = list(viable_buckets)
+        for res, items in buckets.items():
+            if res in viable_buckets:
+                for item in items:
+                    final_tasks.append({"item": item, "target_res": res})
+                continue
+            # 孤儿桶并入宽高比最接近的合格桶；第 4 步按目标桶 adjust_crop_box（安全夹边）
+            target_res = min(viable_list, key=lambda vr: abs((vr[0] / vr[1]) - (res[0] / res[1])))
             for item in items:
-                final_tasks.append({"item": item, "target_res": res})
-            continue
-
-        current_ar = res[0] / res[1]
-        candidates = sorted(viable_list, key=lambda vr: abs((vr[0] / vr[1]) - current_ar))
-
-        # 同一张源图被合并候选时只读一次像素
-        for item in items:
-            img_data = session._get_image_data(item["filepath"])
-            if not img_data:
-                print(f"   ! 无法读取，保持原样: {item['filename']}")
-                final_tasks.append({"item": item, "target_res": res})
-                continue
-
-            try:
-                with Image.open(img_data) as img:
-                    img_w, img_h = img.size
-            except Exception as e:
-                print(f"   ! 打开失败 {item['filename']}: {e}（保持原样）")
-                final_tasks.append({"item": item, "target_res": res})
-                continue
-
-            # 真正修正 item 的裁切框使其适配目标桶比例。
-            # 候选已按宽高比距离排序，第一个就是"最接近"的目标桶；只要选区在图内有效就接受。
-            target_res = candidates[0]
-            adj_x, adj_y, adj_w, adj_h = adjust_crop_box(
-                item["x"], item["y"], item["w"], item["h"],
-                target_res[0], target_res[1], img_w, img_h,
-            )
-            if adj_w > 0 and adj_h > 0:
-                item["x"], item["y"], item["w"], item["h"] = adj_x, adj_y, adj_w, adj_h
                 final_tasks.append({"item": item, "target_res": target_res})
                 merged_count += 1
-            else:
-                print(f"   ! 无法归并: {item['filename']} (保持原样)")
-                final_tasks.append({"item": item, "target_res": res})
 
-    print(f"🔄 优化完成: {merged_count} 张图片被重新归类，生成 {len(viable_buckets)} 个主桶")
-
-    # 4. 执行处理
-    processed_count = 0
-    session.save_counter = 0
-    digits = max(4, len(str(len(final_tasks))))
+        print(f"🔄 优化完成: {merged_count} 张重新归类，{len(viable_buckets)} 个主桶")
 
     if not os.path.exists(session.output_folder):
         os.makedirs(session.output_folder)
 
+    # 4a. 普通框导出（重采样贴桶）。export_summary 记录真实落盘尺寸 → 诚实统计。
+    processed_count = 0
+    session.save_counter = 0
+    digits = max(4, len(str(max(1, len(final_tasks)))))
+    export_summary: Dict = defaultdict(int)
+
     for task in final_tasks:
         item = task["item"]
         target_w, target_h = task["target_res"]
-
-        out_filename = f"{str(session.save_counter).zfill(digits)}.png"
-        out_path = os.path.join(session.output_folder, out_filename)
-
+        out_path = os.path.join(session.output_folder, f"{str(session.save_counter).zfill(digits)}.png")
         try:
             img_data = session._get_image_data(item["filepath"])
             if not img_data:
                 continue
-
             with Image.open(img_data) as img:
                 img_w, img_h = img.size
-
                 adj_x, adj_y, adj_w, adj_h = adjust_crop_box(
                     item["x"], item["y"], item["w"], item["h"],
                     target_w, target_h, img_w, img_h,
                 )
-
-                if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
-                    bg = Image.new("RGB", img.size, (255, 255, 255))
-                    if img.mode != "RGBA":
-                        img = img.convert("RGBA")
-                    bg.paste(img, mask=img.split()[3])
-                    img = bg
-                else:
-                    img = img.convert("RGB")
-
+                img = _flatten_to_rgb(img)
                 cropped = img.crop((adj_x, adj_y, adj_x + adj_w, adj_y + adj_h))
                 final, _, _ = _export_crop(cropped, target_w, target_h, req)
-                final.save(out_path, "PNG", quality=95)
-
-                if not item["filepath"].startswith("zip://"):
-                    src_txt = Path(item["filepath"]).with_suffix(".txt")
-                    if src_txt.exists():
-                        shutil.copy2(src_txt, Path(out_path).with_suffix(".txt"))
-
-                # 触发 tagger 联动（受 session.auto_tag_enabled 控制）
+                _save_png(final, out_path)
+                export_summary[(final.width, final.height)] += 1
+                _copy_caption(item["filepath"], out_path)
                 session.notify_artifact_saved(out_path)
-
                 processed_count += 1
                 session.save_counter += 1
-
         except Exception as e:
             print(f"❌ 处理失败 {item['filename']}: {e}")
 
-    # 导出完只清空队列、把空 queue 同步到磁盘。
-    # 之前用 session.clear_session() 会把整个 session_state.json + .thumb_cache 都删掉，
-    # 用户做了 600 张精修加队列、点导出之后，下次同输入/输出目录初始化就拿不回那 600 张
-    # 的 cropped 标记，1000 张图全部按 pending 重扫，分批工作流被打断。
-    # items / current_index / ignored_files 保留，让用户能继续做剩下的图。
+    # 4b. 纹理框导出（原生裁切、零重采样）→ texture 子目录
+    texture_processed = 0
+    texture_skipped = 0
+    texture_out_root = ""
+    texture_summary: Dict = defaultdict(int)
+    if texture_items:
+        sub = (req.texture_subdir or "texture").strip() or "texture"
+        texture_out_root = os.path.join(session.output_folder, sub)
+        os.makedirs(texture_out_root, exist_ok=True)
+        tdigits = max(4, len(str(len(texture_items))))
+        tcounter = 0
+        for item in texture_items:
+            try:
+                img_data = session._get_image_data(item["filepath"])
+                if not img_data:
+                    texture_skipped += 1
+                    continue
+                with Image.open(img_data) as img:
+                    img = _flatten_to_rgb(img)
+                    result = _export_texture(img, item, target_area, bucket_step, max_ar)
+                    if result is None:
+                        texture_skipped += 1
+                        print(f"   ! 纹理放不下任何桶，跳过: {item['filename']}")
+                        continue
+                    cropped, (bw, bh) = result
+                    out_path = os.path.join(texture_out_root,
+                                            f"tex_{str(tcounter).zfill(tdigits)}.png")
+                    _save_png(cropped, out_path)
+                    texture_summary[(bw, bh)] += 1
+                    if req.texture_copy_caption:
+                        _copy_caption(item["filepath"], out_path)
+                    session.notify_artifact_saved(out_path)
+                    texture_processed += 1
+                    tcounter += 1
+            except Exception as e:
+                texture_skipped += 1
+                print(f"❌ 纹理处理失败 {item['filename']}: {e}")
+
+    # 导出完只清空队列；items / current_index / ignored_files 保留，支持分批续作。
     session.queue = []
     session.op_history = []
     session._save_state()
@@ -239,6 +276,14 @@ async def process_batch(req: BatchProcessRequest = BatchProcessRequest()):
         "merged_count": merged_count,
         "bucket_count": len(viable_buckets),
         "output_folder": session.output_folder,
+        # 诚实统计：真实落盘尺寸分布（而非合并前的等面积桶）
+        "buckets": [{"w": w, "h": h, "count": c}
+                    for (w, h), c in sorted(export_summary.items(), key=lambda kv: -kv[1])],
+        "texture_processed": texture_processed,
+        "texture_skipped": texture_skipped,
+        "texture_output_folder": texture_out_root,
+        "texture_sizes": [{"w": w, "h": h, "count": c}
+                          for (w, h), c in sorted(texture_summary.items(), key=lambda kv: -kv[1])],
     }
 
 
@@ -325,7 +370,7 @@ async def auto_bucket_all(req: AutoBucketRequest = AutoBucketRequest()):
                 while os.path.exists(out_path):
                     dup += 1
                     out_path = f"{base}_{dup}{ext}"
-                final.save(out_path, "PNG", quality=95)
+                _save_png(final, out_path)
 
                 if not src_path.startswith("zip://"):
                     src_txt = Path(src_path).with_suffix(".txt")

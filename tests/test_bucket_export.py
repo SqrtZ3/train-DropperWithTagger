@@ -1,6 +1,11 @@
+import asyncio
+import contextlib
+import io
+import os
+import tempfile
 import unittest
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from webapp.buckets import (
     choose_arb_bucket,
@@ -9,7 +14,9 @@ from webapp.buckets import (
     snap_to_texture_bucket,
     texture_buckets,
 )
-from webapp.routes_crop import _export_crop
+from webapp.routes_crop import _export_crop, _export_texture, process_batch
+from webapp.schemas import BatchProcessRequest
+from webapp.session_manager import session
 
 
 class ArbExportPlanningTests(unittest.TestCase):
@@ -186,6 +193,87 @@ class TextureBucketTests(unittest.TestCase):
             snap_to_texture_bucket(0, 0, 600, 4000, 600, 4000,
                                    self.AREA_1024, step=64)
         )
+
+
+def _spotted(w, h, n=60):
+    """带高频色块的图：重采样会改像素，故可用于验证『零重采样』。"""
+    img = Image.new("RGB", (w, h), (30, 30, 30))
+    d = ImageDraw.Draw(img)
+    for i in range(n):
+        x0 = (i * 53) % max(1, w - 50)
+        y0 = (i * 31) % max(1, h - 50)
+        d.rectangle([x0, y0, x0 + 45, y0 + 45],
+                    fill=((i * 7) % 256, (i * 15) % 256, (i * 23) % 256))
+    return img
+
+
+class RouteTextureExportTests(unittest.TestCase):
+    def test_export_texture_native_and_pixel_identical(self):
+        img = _spotted(1600, 1400)
+        item = {"x": 200, "y": 150, "w": 1300, "h": 1300}
+        out = _export_texture(img, item, 1024 * 1024, 64, 2.0)
+        self.assertIsNotNone(out)
+        cropped, (bw, bh) = out
+        self.assertEqual(cropped.size, (bw, bh))
+        # 与独立 snap+crop 的结果逐像素一致 → 证明零重采样
+        nx, ny, _, _ = snap_to_texture_bucket(
+            200, 150, 1300, 1300, 1600, 1400, 1024 * 1024, 64, 2.0)
+        ref = img.crop((nx, ny, nx + bw, ny + bh))
+        self.assertEqual(cropped.tobytes(), ref.tobytes())  # 逐像素一致
+
+    def test_export_texture_none_when_region_too_small(self):
+        img = _spotted(4000, 4000)
+        item = {"x": 0, "y": 0, "w": 700, "h": 700}
+        self.assertIsNone(_export_texture(img, item, 1024 * 1024, 64, 2.0))
+
+
+class ProcessBatchSplitTests(unittest.TestCase):
+    def test_full_texture_split_and_honest_stats(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            inp = os.path.join(tmp, "in")
+            out = os.path.join(tmp, "out")
+            os.makedirs(inp)
+            a = os.path.join(inp, "a.png"); _spotted(1100, 1100).save(a, "PNG")
+            b = os.path.join(inp, "b.png"); _spotted(1080, 1080).save(b, "PNG")
+            big = os.path.join(inp, "big.png"); _spotted(3000, 2200).save(big, "PNG")
+
+            # 直接配置全局 session，绕开 initialize（不污染 .drop_cache）
+            session.queue = [
+                {"filepath": a, "filename": "a.png", "x": 0, "y": 0, "w": 1100, "h": 1100, "crop_id": 0, "kind": "full"},
+                {"filepath": b, "filename": "b.png", "x": 0, "y": 0, "w": 1080, "h": 1080, "crop_id": 0, "kind": "full"},
+                {"filepath": big, "filename": "big.png", "x": 400, "y": 300, "w": 1400, "h": 1400, "crop_id": 0, "kind": "texture"},
+            ]
+            session.op_history = []
+            session.output_folder = out
+            session._state_file = None        # _save_state() 变 noop
+            session.auto_tag_enabled = False
+            session.set_target(target_mp=1.0, step=64)
+
+            # 捕获 stdout：进度 print 含 emoji，GBK 控制台会崩；测试不该依赖控制台编码
+            with contextlib.redirect_stdout(io.StringIO()):
+                res = asyncio.run(process_batch(
+                    BatchProcessRequest(export_strategy="resize", min_bucket_size=1,
+                                        target_mp=1.0, step=64)))
+
+            self.assertEqual(res["status"], "completed")
+            self.assertEqual(res["processed"], 2)
+            self.assertEqual(res["texture_processed"], 1)
+
+            # 普通框：真实落盘 == 报告桶；resize 下都是 1024²
+            full_files = [f for f in os.listdir(out) if f.endswith(".png")]
+            self.assertEqual(len(full_files), 2)
+            for f in full_files:
+                with Image.open(os.path.join(out, f)) as im:
+                    self.assertEqual(im.size, (1024, 1024))
+            self.assertEqual(res["buckets"], [{"w": 1024, "h": 1024, "count": 2}])
+
+            # 纹理框：原生尺寸、进 texture 子目录、与报告一致
+            tex_dir = os.path.join(out, "texture")
+            tex_files = [f for f in os.listdir(tex_dir) if f.endswith(".png")]
+            self.assertEqual(len(tex_files), 1)
+            tw, th = res["texture_sizes"][0]["w"], res["texture_sizes"][0]["h"]
+            with Image.open(os.path.join(tex_dir, tex_files[0])) as im:
+                self.assertEqual(im.size, (tw, th))
 
 
 if __name__ == "__main__":

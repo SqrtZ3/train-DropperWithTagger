@@ -16,7 +16,7 @@ function ReelsScreen({ session, refresh, targetMP, setTargetMP, step, setStep })
     // auto-mode-only options
     const [includeProcessed, setIncludeProcessed] = React.useState(false);
     const [subdir, setSubdir] = React.useState('');
-    const [exportStrategy, setExportStrategy] = React.useState(localStorage.getItem('drop.exportStrategy') || 'arb_crop');
+    const [exportStrategy, setExportStrategy] = React.useState(localStorage.getItem('drop.exportStrategy') || 'resize');
     const [bucketBases, setBucketBases] = React.useState(localStorage.getItem('drop.bucketBases') || '512,768,1024,1536,2048');
     const [bucketMaxBase, setBucketMaxBase] = React.useState(parseInt(localStorage.getItem('drop.bucketMaxBase')) || 2048);
     const [outputMaxBase, setOutputMaxBase] = React.useState(parseInt(localStorage.getItem('drop.outputMaxBase')) || 1024);
@@ -152,8 +152,8 @@ function ReelsScreen({ session, refresh, targetMP, setTargetMP, step, setStep })
                     <div className="col" style={{ padding: 14, gap: 12 }}>
                         <div className="row gap-2">
                             {[
+                                { id: 'resize', label: '贴桶（上下采样）' },
                                 { id: 'arb_crop', label: '裁切优先' },
-                                { id: 'resize', label: '旧版 resize' },
                             ].map(o => (
                                 <button key={o.id}
                                     className={'btn ' + (exportStrategy === o.id ? 'btn-primary' : '')}
@@ -270,10 +270,19 @@ function ReelsScreen({ session, refresh, targetMP, setTargetMP, step, setStep })
                                 {result.mode === 'auto' && <Stat label="错误" value={result.error_count || 0} danger={(result.error_count || 0) > 0}/>}
                                 {result.mode === 'queue' && <Stat label="桶数" value={result.bucket_count || 0}/>}
                                 {result.mode === 'queue' && <Stat label="合并" value={result.merged_count || 0}/>}
+                                {result.mode === 'queue' && (result.texture_processed || 0) > 0 &&
+                                    <Stat label="纹理" value={result.texture_processed || 0} accent/>}
                             </div>
                             <div style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>
                                 → {result.output_folder}
                             </div>
+                            {result.mode === 'queue' && (result.texture_processed || 0) > 0 && (
+                                <div style={{ fontSize: 12, color: 'var(--text-2)', fontFamily: 'var(--font-mono)' }}>
+                                    纹理 {result.texture_processed} 张（原生·零重采样）→ {result.texture_output_folder}
+                                    {(result.texture_skipped || 0) > 0 &&
+                                        <span style={{ color: 'var(--text-3)' }}>　跳过 {result.texture_skipped}（放不下桶）</span>}
+                                </div>
+                            )}
                             {Array.isArray(result.buckets) && result.buckets.length > 0 && (
                                 <div className="col gap-1" style={{ paddingTop: 6, borderTop: '1px solid var(--line)' }}>
                                     <div className="eyebrow">分桶分布</div>

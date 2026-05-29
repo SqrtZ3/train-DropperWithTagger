@@ -20,9 +20,11 @@ const CROP_COLORS = ['#6EE7C8', '#F4B860', '#82A4FF', '#FF8FAB', '#C9A0FF', '#7B
    - **非 active 框**仅在「中央」点击切换，不接管移动。
    ============================================================ */
 
-function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onChange, onPick, onDelete, imgW, imgH }) {
+function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onChange, onPick, onDelete, onToggleKind, onGeometryCommit, imgW, imgH }) {
     const start = React.useRef(null);
-    const hasRatioLock = aspectRatio !== 'free';
+    const isTexture = crop.kind === 'texture';
+    // 纹理框忽略比例锁：自由画 + 松手吸附说了算
+    const hasRatioLock = aspectRatio !== 'free' && !isTexture;
 
     // makeHandle 工厂：返回 mousedown/touchstart 监听器。
     const makeHandle = (mode) => (e) => {
@@ -103,6 +105,8 @@ function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onCh
             window.removeEventListener('mouseup', up);
             window.removeEventListener('touchmove', move);
             window.removeEventListener('touchend', up);
+            // 松手：纹理框由父级吸附到合法桶（普通框父级会忽略）
+            if (onGeometryCommit) onGeometryCommit();
         };
         window.addEventListener('mousemove', move);
         window.addEventListener('mouseup', up);
@@ -126,7 +130,7 @@ function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onCh
                 top: crop.y * scale,
                 width: crop.w * scale,
                 height: crop.h * scale,
-                border: `2px solid ${color}`,
+                border: `2px ${isTexture ? 'dashed' : 'solid'} ${color}`,
                 outline: isActive ? `1px solid ${color}` : 'none',
                 outlineOffset: 1,
                 opacity: isActive ? 1 : 0.78,
@@ -145,7 +149,7 @@ function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onCh
                 padding: '2px 6px', borderRadius: '0 0 4px 0',
                 pointerEvents: 'none',
             }}>
-                {crop.idx + 1}
+                {isTexture ? `纹${crop.idx + 1}` : crop.idx + 1}
             </div>
 
             {!isActive && (
@@ -175,12 +179,32 @@ function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onCh
                     padding: '2px 6px', borderRadius: 3, whiteSpace: 'nowrap',
                     pointerEvents: 'none',
                 }}>
-                    {Math.round(crop.w)}×{Math.round(crop.h)} · {(crop.w / crop.h).toFixed(2)}
+                    {isTexture
+                        ? `纹理 ${Math.round(crop.w)}×${Math.round(crop.h)} · 原生`
+                        : `${Math.round(crop.w)}×${Math.round(crop.h)} · ${(crop.w / crop.h).toFixed(2)}`}
                 </div>
             )}
 
             {isActive && (
                 <>
+                    <button
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onTouchStart={(e) => e.stopPropagation()}
+                        onClick={(e) => { e.stopPropagation(); onToggleKind && onToggleKind(); }}
+                        style={{
+                            position: 'absolute', top: -14, left: -14,
+                            width: 28, height: 28,
+                            background: isTexture ? '#F4B860' : 'var(--surface-0)',
+                            color: isTexture ? 'var(--accent-ink)' : 'var(--text-2)',
+                            borderRadius: '50%', border: '2px solid var(--surface-0)',
+                            boxShadow: '0 1px 4px rgba(0,0,0,.5)',
+                            fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 700,
+                            touchAction: 'none', zIndex: 60,
+                        }}
+                        title={isTexture ? '纹理框（原生裁切·零重采样）→ 点击转普通' : '普通框（重采样贴桶）→ 点击转纹理'}
+                    >
+                        {isTexture ? '纹' : '全'}
+                    </button>
                     <button
                         className="btn-icon"
                         onMouseDown={(e) => e.stopPropagation()}
@@ -331,12 +355,12 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
             setInfo(d);
             const saved = d.saved_crops || [];
             const list = saved.length > 0
-                ? saved.map((c, i) => ({ x: c.x, y: c.y, w: c.w, h: c.h, idx: i }))
+                ? saved.map((c, i) => ({ x: c.x, y: c.y, w: c.w, h: c.h, idx: i, kind: c.kind || 'full' }))
                 : (d.suggested_box ? [{
                     x: d.suggested_box[0], y: d.suggested_box[1],
                     w: d.suggested_box[2] - d.suggested_box[0],
                     h: d.suggested_box[3] - d.suggested_box[1],
-                    idx: 0
+                    idx: 0, kind: 'full'
                   }] : []);
             setCrops(list);
             setActiveIdx(0);
@@ -415,7 +439,7 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
         // 新框居中。若图片大小不能容纳参考尺寸（极端情况），夹到 [0, max] 内。
         const x = Math.max(0, Math.min(info.width - w, (info.width - w) / 2));
         const y = Math.max(0, Math.min(info.height - h, (info.height - h) / 2));
-        const nc = { x, y, w, h, idx: crops.length };
+        const nc = { x, y, w, h, idx: crops.length, kind: 'full' };
         setCrops(cs => [...cs, nc]);
         setActiveIdx(crops.length);
     }
@@ -429,6 +453,35 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
         setActiveIdx(Math.max(0, Math.min(activeIdx, next.length - 1)));
     }
 
+    // 切换框的类型。转纹理时立即吸附到合法桶；放不下则提示并保持普通。
+    function toggleKind(i) {
+        setCrops(cs => cs.map((c, j) => {
+            if (j !== i) return c;
+            if (c.kind === 'texture') return { ...c, kind: 'full' };
+            const snapped = info?.width
+                ? snapTextureBucket(c, info.width, info.height, targetMP, step)
+                : null;
+            if (!snapped) {
+                ToastBus.emit('此区域放不下任何桶（源图太小），无法设为纹理', 'warn');
+                return c;
+            }
+            return { ...c, kind: 'texture', ...snapped };
+        }));
+    }
+
+    // 纹理框松手后吸附到合法桶（普通框不动）。从最新 state 读，避免闭包快照。
+    function snapCropIfTexture(i) {
+        setCrops(cs => cs.map((c, j) => {
+            if (j !== i || c.kind !== 'texture' || !info?.width) return c;
+            const snapped = snapTextureBucket(c, info.width, info.height, targetMP, step);
+            if (!snapped) {
+                ToastBus.emit('此区域放不下任何桶（源图太小）', 'warn');
+                return c;
+            }
+            return { ...c, ...snapped };
+        }));
+    }
+
     async function commit(action) {
         if (busy || !info) return;
         setBusy(true);
@@ -440,6 +493,7 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
                 crops: action === 'accept' ? crops.map(c => ({
                     x: Math.round(c.x), y: Math.round(c.y),
                     w: Math.round(c.w), h: Math.round(c.h),
+                    kind: c.kind || 'full',
                 })) : [],
                 status: action === 'accept' ? 'cropped' : 'skip',
             };
@@ -599,13 +653,35 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
                 </div>
             </Panel>
 
-            {active && bucket && (
-                <Panel eyebrow={`框 ${activeIdx + 1} / ${crops.length}`} title="桶预测"
+            {active && (
+                <Panel eyebrow={`框 ${activeIdx + 1} / ${crops.length}`}
+                    title={active.kind === 'texture' ? '纹理桶 · 原生' : '桶预测'}
                     style={{ borderRadius: 0, border: 'none', borderBottom: '1px solid var(--line)' }}>
+                    <div className="row gap-2" style={{ padding: '10px 14px 6px' }}>
+                        <button className={`btn btn-sm ${active.kind !== 'texture' ? 'btn-primary' : 'btn-soft'}`}
+                            style={{ flex: 1 }}
+                            onClick={() => { if (active.kind === 'texture') toggleKind(activeIdx); }}>
+                            全图
+                        </button>
+                        <button className={`btn btn-sm ${active.kind === 'texture' ? 'btn-primary' : 'btn-soft'}`}
+                            style={{ flex: 1 }}
+                            onClick={() => { if (active.kind !== 'texture') toggleKind(activeIdx); }}>
+                            纹理
+                        </button>
+                    </div>
                     <InspectorRow label="选区" value={`${Math.round(active.w)} × ${Math.round(active.h)}`}/>
-                    <InspectorRow label="选区比例" value={(active.w / active.h).toFixed(3)}/>
-                    <InspectorRow label="目标桶" value={`${bucket.w} × ${bucket.h}`} accent/>
-                    <InspectorRow label="桶比例" value={(bucket.w / bucket.h).toFixed(3)}/>
+                    {active.kind === 'texture' ? (
+                        <>
+                            <InspectorRow label="纹理桶" value={`${Math.round(active.w)} × ${Math.round(active.h)}`} accent/>
+                            <InspectorRow label="重采样" value="无（原生像素）"/>
+                        </>
+                    ) : (bucket && (
+                        <>
+                            <InspectorRow label="选区比例" value={(active.w / active.h).toFixed(3)}/>
+                            <InspectorRow label="目标桶" value={`${bucket.w} × ${bucket.h}`} accent/>
+                            <InspectorRow label="桶比例" value={(bucket.w / bucket.h).toFixed(3)}/>
+                        </>
+                    ))}
                 </Panel>
             )}
 
@@ -731,6 +807,7 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
                                 if (dragStart.current && box && box.w > 15 && box.h > 15) {
                                     setCrops(cs => [...cs, {
                                         x: box.x, y: box.y, w: box.w, h: box.h, idx: cs.length,
+                                        kind: 'full',
                                     }]);
                                     setActiveIdx(crops.length);
                                 }
@@ -764,6 +841,8 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
                                 onPick={() => setActiveIdx(i)}
                                 onChange={(nc) => updateCrop(i, nc)}
                                 onDelete={() => delCrop(i)}
+                                onToggleKind={() => toggleKind(i)}
+                                onGeometryCommit={() => snapCropIfTexture(i)}
                                 imgW={info.width}
                                 imgH={info.height}
                             />

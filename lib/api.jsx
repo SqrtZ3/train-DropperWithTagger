@@ -208,8 +208,8 @@ function useIsNarrow() {
 
 // Calculate the best bucket (w,h) for a given source dimension at target MP + step.
 // Returns the bucket with closest aspect ratio.
-function calcBucket(w, h, mp = 1, step = 64) {
-    if (!w || !h) return { w: step, h: step };
+// 标准等面积桶列表（与后端 get_standard_buckets 同算法，保持前后端一致）。
+function standardBuckets(mp = 1, step = 64) {
     const targetArea = mp * 1024 * 1024;
     const root = Math.floor(Math.sqrt(targetArea));
     const base = Math.round(root / step) * step;
@@ -223,6 +223,12 @@ function calcBucket(w, h, mp = 1, step = 64) {
         }
         if (bw / Math.max(1, bh) > 4.5) break;
     }
+    return buckets;
+}
+
+function calcBucket(w, h, mp = 1, step = 64) {
+    if (!w || !h) return { w: step, h: step };
+    const buckets = standardBuckets(mp, step);
     const ar = w / h;
     let best = buckets[0];
     let bestDiff = Math.abs(best[0]/best[1] - ar);
@@ -233,8 +239,29 @@ function calcBucket(w, h, mp = 1, step = 64) {
     return { w: best[0], h: best[1] };
 }
 
+// 镜像后端 snap_to_texture_bucket：把画框 {x,y,w,h}(源像素) 向内吸附到合法纹理桶。
+// 返回 {x,y,w,h}（尺寸 == 桶、原生）或 null（放不下任何桶）。导出时后端还会再校验一次。
+function snapTextureBucket(box, srcW, srcH, mp = 1, step = 64, maxAr = 2.0) {
+    if (!box || box.w <= 0 || box.h <= 0 || srcW <= 0 || srcH <= 0) return null;
+    const cap = Math.max(1, maxAr) + 1e-9;
+    const drawnAr = box.w / box.h;
+    const feasible = standardBuckets(mp, step).filter(
+        ([bw, bh]) => Math.max(bw / bh, bh / bw) <= cap
+            && bw <= box.w && bh <= box.h && bw <= srcW && bh <= srcH);
+    if (!feasible.length) return null;
+    const bestArea = Math.max(...feasible.map(([bw, bh]) => bw * bh));
+    const near = feasible.filter(([bw, bh]) => bw * bh >= bestArea * 0.98);
+    near.sort((p, q) => Math.abs(p[0] / p[1] - drawnAr) - Math.abs(q[0] / q[1] - drawnAr));
+    const [bw, bh] = near[0];
+    const cx = box.x + box.w / 2, cy = box.y + box.h / 2;
+    let nx = Math.round(cx - bw / 2), ny = Math.round(cy - bh / 2);
+    nx = Math.max(0, Math.min(nx, srcW - bw));
+    ny = Math.max(0, Math.min(ny, srcH - bh));
+    return { x: nx, y: ny, w: bw, h: bh };
+}
+
 Object.assign(window, {
     api, ToastBus, ToastHost, LazyImg, fmtDuration, fmtPct, basename,
     cleanPath, pasteCleanedPath,
-    useKey, useIsNarrow, calcBucket,
+    useKey, useIsNarrow, calcBucket, standardBuckets, snapTextureBucket,
 });

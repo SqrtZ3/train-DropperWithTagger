@@ -47,6 +47,55 @@ def calculate_output_size(crop_w: int, crop_h: int,
     return min(buckets, key=lambda res: abs(res[0] / res[1] - current_ar))
 
 
+def texture_buckets(target_area: int = TARGET_PIXEL_AREA,
+                    step: int = BUCKET_STEP_SIZE,
+                    max_ar: float = 2.0) -> List[Tuple[int, int]]:
+    """纹理补充桶候选集：标准等面积桶里宽高比 ≤ max_ar 的那些。
+
+    与 get_standard_buckets 同源（跟随 session.target_area），只是把极扁的桶
+    （AR > max_ar）剔掉——纹理细节块不需要 4.5:1 这种长条。
+    """
+    cap = max(1.0, float(max_ar))
+    return [
+        (w, h) for (w, h) in get_standard_buckets(target_area, step)
+        if max(w / h, h / w) <= cap + 1e-9
+    ]
+
+
+def snap_to_texture_bucket(x: float, y: float, w: float, h: float,
+                           src_w: int, src_h: int,
+                           target_area: int = TARGET_PIXEL_AREA,
+                           step: int = BUCKET_STEP_SIZE,
+                           max_ar: float = 2.0):
+    """把用户画的框 (x,y,w,h) 向内吸附到一个合法纹理桶，返回原生裁切框
+    (nx, ny, bw, bh)；放不下任何桶时返回 None。
+
+    规则：候选 = texture_buckets；可行桶 = 两边都 ≤ 画框且 ≤ 源图；取面积最大者
+    （面积相差 ≤2% 视为并列，再取宽高比最接近画框者——尽量多保留原生像素的
+    同时贴合画框形状）；以画框中心居中、夹进源图内。输出尺寸 == 桶尺寸，
+    调用方据此原生裁切、零重采样。
+    """
+    if w <= 0 or h <= 0 or src_w <= 0 or src_h <= 0:
+        return None
+    drawn_ar = w / h
+    feasible = [
+        (bw, bh) for (bw, bh) in texture_buckets(target_area, step, max_ar)
+        if bw <= w and bh <= h and bw <= src_w and bh <= src_h
+    ]
+    if not feasible:
+        return None
+    best_area = max(bw * bh for bw, bh in feasible)
+    near = [(bw, bh) for (bw, bh) in feasible if bw * bh >= best_area * 0.98]
+    bw, bh = min(near, key=lambda b: abs((b[0] / b[1]) - drawn_ar))
+    cx = x + w / 2.0
+    cy = y + h / 2.0
+    nx = int(round(cx - bw / 2.0))
+    ny = int(round(cy - bh / 2.0))
+    nx = max(0, min(nx, int(src_w) - bw))
+    ny = max(0, min(ny, int(src_h) - bh))
+    return (nx, ny, bw, bh)
+
+
 def _normalize_base_resos(base_resos=None, min_base_reso: int = 0,
                           max_base_reso: int = 0,
                           base_reso_step: int = 256,

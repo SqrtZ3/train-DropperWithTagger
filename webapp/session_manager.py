@@ -463,6 +463,8 @@ class SessionManager:
                     "filename": os.path.basename(filepath) if not filepath.startswith("zip://") else filepath,
                     "x": crop["x"], "y": crop["y"], "w": crop["w"], "h": crop["h"],
                     "crop_id": i,
+                    # 'full'（默认，重采样贴桶）| 'texture'（原生裁切零重采样）
+                    "kind": crop.get("kind", "full"),
                 })
                 queue_added_count += 1
 

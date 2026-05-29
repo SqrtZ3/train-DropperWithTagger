@@ -25,7 +25,9 @@ class SaveCropRequest(BaseModel):
 
 
 class ExportBucketOptions(BaseModel):
-    export_strategy: Optional[str] = "arb_crop"
+    # 默认 resize：任何裁切都上/下采样贴合所选桶，输出永远是干净桶尺寸。
+    # crop-first（arb_crop）保留为可选项（统计已对齐真实输出桶）。
+    export_strategy: Optional[str] = "resize"
     target_mp: Optional[float] = None
     step: Optional[int] = None
     bucket_base_resos: Optional[List[int]] = None
@@ -35,6 +37,10 @@ class ExportBucketOptions(BaseModel):
     bucket_base_reso_steps: Optional[int] = 256
     min_bucket_reso: Optional[int] = 512
     max_bucket_reso: Optional[int] = 2048
+    # 纹理补充桶（原生裁切、零重采样）：勾了「纹理」的框走这套
+    texture_subdir: Optional[str] = "texture"
+    texture_copy_caption: Optional[bool] = True
+    texture_max_ar: Optional[float] = 2.0
 
 
 class BatchProcessRequest(ExportBucketOptions):

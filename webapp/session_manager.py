@@ -421,7 +421,12 @@ class SessionManager:
                 img_w, img_h = img.size
 
                 if state.HAS_AUTO_CROP and state.auto_crop is not None:
-                    return state.auto_crop.calculate_auto_crop_box(img, 1.0)
+                    x, y, w, h = state.auto_crop.calculate_auto_crop_box(img, 1.0)
+                    # calculate_auto_crop_box 返回 (x, y, w, h)，但前端把 suggested_box
+                    # 当 (x1, y1, x2, y2) 解析（w = box[2]-box[0]）。这里转成右下角坐标，
+                    # 否则 x>w 的建议框（主体偏右的宽图）会被前端算成负宽 → 用户直接
+                    # 接受后，calculate_output_size 落到 (step,step) 兜底 → 导出 64×64 纯黑图。
+                    return (int(x), int(y), int(x + w), int(y + h))
 
                 return (0, 0, img_w, img_h)
         except Exception:

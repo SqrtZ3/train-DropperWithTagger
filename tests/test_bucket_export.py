@@ -107,6 +107,19 @@ class DetailPreservingDownsampleTests(unittest.TestCase):
 
         self.assertEqual(out.size, (1536, 1024))
 
+    def test_downsample_is_gamma_correct(self):
+        # 黑白棋盘缩到 1px：感知上 50% 白覆盖 → 线性 0.5 → sRGB ~188。
+        # 在 sRGB(gamma)编码值上直接平均会得到 ~128（偏暗 = 「画面损伤」）。
+        chk = Image.new("RGB", (256, 256))
+        px = chk.load()
+        for y in range(256):
+            for x in range(256):
+                v = 255 if (x + y) % 2 == 0 else 0
+                px[x, y] = (v, v, v)
+        out = downsample_preserving_detail(chk, (1, 1)).getpixel((0, 0))
+        # gamma-correct 应落在 ~188 附近，远离 naive 的 ~128
+        self.assertGreater(out[0], 170)
+
 
 class RouteExportHelperTests(unittest.TestCase):
     def test_export_crop_uses_crop_only_for_near_bucket_image(self):
@@ -274,6 +287,38 @@ class ProcessBatchSplitTests(unittest.TestCase):
             tw, th = res["texture_sizes"][0]["w"], res["texture_sizes"][0]["h"]
             with Image.open(os.path.join(tex_dir, tex_files[0])) as im:
                 self.assertEqual(im.size, (tw, th))
+
+    def test_degenerate_box_is_skipped_not_black_64(self):
+        """退化框（宽/高 ≤0，如坐标格式错配产生的负宽）必须被跳过，
+        而不是导出 64×64 纯黑图。"""
+        with tempfile.TemporaryDirectory() as tmp:
+            inp = os.path.join(tmp, "in"); out = os.path.join(tmp, "out")
+            os.makedirs(inp)
+            good = os.path.join(inp, "good.png"); _spotted(1200, 1200).save(good, "PNG")
+            bad = os.path.join(inp, "bad.png"); _spotted(1200, 1200).save(bad, "PNG")
+
+            session.queue = [
+                {"filepath": good, "filename": "good.png", "x": 50, "y": 50, "w": 1000, "h": 1000, "crop_id": 0, "kind": "full"},
+                {"filepath": bad, "filename": "bad.png", "x": 800, "y": 50, "w": -200, "h": 600, "crop_id": 0, "kind": "full"},
+            ]
+            session.op_history = []
+            session.output_folder = out
+            session._state_file = None
+            session.auto_tag_enabled = False
+            session.set_target(target_mp=1.0, step=64)
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                res = asyncio.run(process_batch(
+                    BatchProcessRequest(export_strategy="resize", min_bucket_size=1,
+                                        target_mp=1.0, step=64)))
+
+            self.assertEqual(res["processed"], 1)
+            self.assertEqual(res["degenerate_skipped"], 1)
+            files = [f for f in os.listdir(out) if f.endswith(".png")]
+            self.assertEqual(len(files), 1)
+            for f in files:
+                with Image.open(os.path.join(out, f)) as im:
+                    self.assertNotEqual(im.size, (64, 64))
 
 
 if __name__ == "__main__":

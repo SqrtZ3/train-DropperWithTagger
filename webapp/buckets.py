@@ -4,6 +4,7 @@ import math
 from dataclasses import dataclass
 from typing import List, Tuple
 
+import numpy as np
 from PIL import Image
 
 from webapp.config import BUCKET_STEP_SIZE, TARGET_PIXEL_AREA
@@ -285,21 +286,61 @@ def plan_arb_export(src_w: int, src_h: int, *, base_resos=None,
     )
 
 
+# sRGB ↔ 线性光 转换（IEC 61966-2-1）。输入/输出都是 [0,1] 浮点。
+_SRGB_THRESH = 0.04045
+_LIN_THRESH = 0.0031308
+
+
+def _srgb_to_linear(a: np.ndarray) -> np.ndarray:
+    return np.where(a <= _SRGB_THRESH, a / 12.92, ((a + 0.055) / 1.055) ** 2.4)
+
+
+def _linear_to_srgb(a: np.ndarray) -> np.ndarray:
+    a = np.clip(a, 0.0, 1.0)
+    return np.where(a <= _LIN_THRESH, a * 12.92, 1.055 * (a ** (1.0 / 2.4)) - 0.055)
+
+
+# 输入是 8-bit sRGB，用 256 项 LUT 把 sRGB→线性 的 pow 从「全图逐像素」降为查表，
+# 大图下采样省掉 ~6 倍开销（线性→sRGB 只作用在更小的输出上，保留 pow 即可）。
+_SRGB_TO_LIN_LUT = _srgb_to_linear(np.arange(256, dtype=np.float32) / 255.0).astype(np.float32)
+
+
+def _resize_linear_light(img: Image.Image, size: Tuple[int, int],
+                         resample=Image.Resampling.LANCZOS) -> Image.Image:
+    """在线性光空间重采样（gamma-correct）。逐通道转 32-bit float 单独 resize，
+    避免 8-bit 中间量化引入 banding。仅处理 RGB，返回 RGB。"""
+    lin = _SRGB_TO_LIN_LUT[np.asarray(img, dtype=np.uint8)]
+    chans = []
+    for c in range(3):
+        fch = Image.fromarray(np.ascontiguousarray(lin[:, :, c]), mode="F")
+        chans.append(np.asarray(fch.resize(size, resample=resample), dtype=np.float32))
+    srgb = _linear_to_srgb(np.stack(chans, axis=-1))
+    out = np.clip(srgb * 255.0 + 0.5, 0.0, 255.0).astype(np.uint8)
+    return Image.fromarray(out, mode="RGB")
+
+
 def downsample_preserving_detail(img, target_size: Tuple[int, int]):
+    """高质量下采样：在【线性光空间】用 Lanczos 一次到位。
+
+    旧实现是「BOX 逐级减半 + 末尾 Lanczos」，且全程在 sRGB(gamma 编码)值上做
+    加权平均——这正是「画面损伤太大」的两个根源：
+      1) gamma 误差：sRGB 不是线性的，直接对编码值平均会让亮部 / 高频细节整体
+         偏暗、对比与亮度流失（见 Brasseur「gamma error in picture scaling」、
+         Pillow #1604）。正确做法是 sRGB→线性 → 重采样 → 线性→sRGB。
+      2) 多余的 BOX 预缩：Pillow 的 Lanczos 缩小时已自带按比例展宽的抗锯齿预滤波，
+         任意缩放比一次到位即可；逐级 BOX 只是额外软化、削弱锐度。
+    中间量用 32-bit float，避免 8-bit 量化 banding。
+    """
     target_w, target_h = int(target_size[0]), int(target_size[1])
     if img.size == (target_w, target_h):
         return img.copy()
     if target_w >= img.width or target_h >= img.height:
+        # 放大（本管线 no_upscale=True 下基本不发生）：保持原行为
         return img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
-
-    current = img
-    while current.width / target_w > 2.0 and current.height / target_h > 2.0:
-        next_size = (
-            max(target_w, int(current.width * 0.5)),
-            max(target_h, int(current.height * 0.5)),
-        )
-        current = current.resize(next_size, resample=Image.Resampling.BOX)
-    return current.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+    if img.mode != "RGB":
+        # 非 RGB（如带 alpha / 调色板）退回普通 Lanczos，避免线性化误处理通道
+        return img.resize((target_w, target_h), resample=Image.Resampling.LANCZOS)
+    return _resize_linear_light(img, (target_w, target_h))
 
 
 def adjust_crop_box(x: float, y: float, w: float, h: float,

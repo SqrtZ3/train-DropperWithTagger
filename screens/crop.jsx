@@ -20,7 +20,7 @@ const CROP_COLORS = ['#6EE7C8', '#F4B860', '#82A4FF', '#FF8FAB', '#C9A0FF', '#7B
    - **非 active 框**仅在「中央」点击切换，不接管移动。
    ============================================================ */
 
-function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onChange, onPick, onDelete, onToggleKind, onGeometryCommit, imgW, imgH }) {
+function CropBox({ crop, color, scale, isActive, zBase, aspectRatio, activeBucket, onChange, onPick, onDelete, onToggleKind, onGeometryCommit, imgW, imgH }) {
     const start = React.useRef(null);
     const isTexture = crop.kind === 'texture';
     // 纹理框忽略比例锁：自由画 + 松手吸附说了算
@@ -138,7 +138,9 @@ function CropBox({ crop, color, scale, isActive, aspectRatio, activeBucket, onCh
                 boxShadow: isActive ? `0 0 0 9999px rgba(0,0,0,.42)` : 'none',
                 touchAction: 'none',
                 transition: 'box-shadow .15s var(--ease), opacity .15s var(--ease)',
-                zIndex: isActive ? 50 : 10,
+                // 嵌套框拾取：z-index 由父级按面积反排（小框 z 更高），active 仅 +1 微调。
+                // 这样「大框包住小框」时，里面小框的拾取按钮仍在外层 active 框之上 → 点得到。
+                zIndex: (zBase || 10) + (isActive ? 1 : 0),
                 pointerEvents: isActive ? 'auto' : 'none',
             }}
         >
@@ -484,17 +486,25 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
 
     async function commit(action) {
         if (busy || !info) return;
+        // 退化框（取整后宽或高 ≤0）会让后端导出 64×64 纯黑图；接受前先剔除。
+        const outCrops = action === 'accept'
+            ? crops.map(c => ({
+                x: Math.round(c.x), y: Math.round(c.y),
+                w: Math.round(c.w), h: Math.round(c.h),
+                kind: c.kind || 'full',
+              })).filter(c => c.w > 0 && c.h > 0)
+            : [];
+        if (action === 'accept' && crops.length > 0 && outCrops.length === 0) {
+            ToastBus.emit('裁切框尺寸为 0，已忽略——请重新框选', 'warn');
+            return;
+        }
         setBusy(true);
         localNavTouchedRef.current = Date.now();
         try {
             const body = {
                 filepath: info.filepath,
                 filename: info.filename,
-                crops: action === 'accept' ? crops.map(c => ({
-                    x: Math.round(c.x), y: Math.round(c.y),
-                    w: Math.round(c.w), h: Math.round(c.h),
-                    kind: c.kind || 'full',
-                })) : [],
+                crops: outCrops,
                 status: action === 'accept' ? 'cropped' : 'skip',
             };
             const r = await api.post('/api/save', body);
@@ -546,6 +556,19 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
         const idx = parseInt(e.key) - 1;
         if (idx < crops.length) setActiveIdx(idx);
     }, [crops.length]);
+
+    // 嵌套框拾取修复：按面积从大到小排名，小框拿更高 z-index——小框永远叠在
+    // 把它包住的大框之上。否则把外层大框设为 active 后，它满铺的命中层会盖住里面
+    // 小框的「中心拾取按钮」，导致点不到内框做切换（用户反馈的 bug）。
+    // 注意：useMemo 必须在下面的提前 return 之前调用，否则违反 hooks 调用顺序规则。
+    const cropZ = React.useMemo(() => {
+        const ranked = crops
+            .map((c, i) => ({ i, area: Math.max(1, (c.w || 0) * (c.h || 0)) }))
+            .sort((a, b) => b.area - a.area);            // 最大面积 → rank 0 → z 最低
+        const z = {};
+        ranked.forEach((o, rank) => { z[o.i] = 10 + rank * 2; });
+        return z;
+    }, [crops]);
 
     if (!session?.is_initialized) {
         return <div className="center" style={{ flex: 1, color: 'var(--text-3)' }}>请先在主页初始化会话</div>;
@@ -836,6 +859,7 @@ function CropScreen({ session, refresh, targetMP, setTargetMP, step, setStep }) 
                                 color={CROP_COLORS[i % CROP_COLORS.length]}
                                 scale={scale}
                                 isActive={i === activeIdx}
+                                zBase={cropZ[i]}
                                 aspectRatio={aspectRatio}
                                 activeBucket={bucket}
                                 onPick={() => setActiveIdx(i)}

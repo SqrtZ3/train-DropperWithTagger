@@ -201,8 +201,15 @@ async def process_batch(req: BatchProcessRequest = BatchProcessRequest()):
     digits = max(4, len(str(max(1, len(final_tasks)))))
     export_summary: Dict = defaultdict(int)
 
+    degenerate_skipped = 0
     for task in final_tasks:
         item = task["item"]
+        # 退化框（宽或高 ≤0，多见于坐标格式错配或异常手势）会让 calculate_output_size
+        # 落到 (step,step) 兜底、裁出 0 面积区域 → resize 成纯黑小图。直接跳过。
+        if item.get("w", 0) <= 0 or item.get("h", 0) <= 0:
+            degenerate_skipped += 1
+            print(f"  ! 跳过退化框 {item.get('w')}×{item.get('h')}: {item.get('filename')}")
+            continue
         target_w, target_h = task["target_res"]
         out_path = os.path.join(session.output_folder, f"{str(session.save_counter).zfill(digits)}.png")
         try:
@@ -274,6 +281,7 @@ async def process_batch(req: BatchProcessRequest = BatchProcessRequest()):
         "status": "completed",
         "processed": processed_count,
         "merged_count": merged_count,
+        "degenerate_skipped": degenerate_skipped,
         "bucket_count": len(viable_buckets),
         "output_folder": session.output_folder,
         # 诚实统计：真实落盘尺寸分布（而非合并前的等面积桶）
